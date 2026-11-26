@@ -72,7 +72,8 @@ an undo line for everything it installs.
 
 **🧾 The board, always on.** One list of things that need a person, each with history, notes, snooze, mute and
 resolve. Also: an **Events** timeline, a **Hosts** view of log ingest per host, a **Logs** explorer on VictoriaLogs
-(any query can become an alert rule), maintenance windows that silence what they cover, GeoIP, and updates you approve.
+(any query can become an alert rule), maintenance windows that silence what they cover, GeoIP, and updates you approve. **Users** come as
+admins or view-only auditors, with MFA and sign-in through Google, Microsoft, Discord, GitHub or any OpenID Connect provider.
 
 Everything else is a **module**. The setup groups modules into **monitors**; pick only what you use. A module that's
 off runs no collectors, makes no outbound calls and needs no secrets.
@@ -240,32 +241,75 @@ Not everyone's network looks the same, so the installer asks instead of assuming
 
 ## 🔧 Admin commands
 
-Run these on the board's VM, from the install directory. Run `setup.py` as the `logwatch` user: as root it would leave
-`secrets/secrets.env` owned by root, and the board couldn't read it.
+Run these on the board's VM, from the install directory. Run `setup.py` as the `logwatch` user (as root, 2.3.0+ keeps
+`secrets/secrets.env` readable by the board, but files it creates elsewhere may not be).
 
 ```bash
 cd /opt/logwatch-dashboard
 ```
 
-### Login
+### Users, roles and sign-in
 
-The board has **one admin account**. These commands change it; the old password isn't needed, so they also work when
-you've forgotten it.
+Since 2.3.0 the board has **multiple users**, each with a role:
+
+- **admin**: everything, including users and sign-in settings.
+- **auditor**: view only. They can open every page and log but can't change anything. They can still manage their own
+  password and MFA.
+
+In the board, **Settings → Account** has your password, MFA and sessions. Admins also get **Users & sign-in** (`/users`)
+for users, required MFA and SSO. The same tasks work from the VM with `setup.py user`, which runs inside the board
+container. Changes apply at once, with no restart. None of these commands need the old password, so they also work
+when you're locked out.
 
 | Task | Command |
 |---|---|
-| Change the password | `sudo -u logwatch python3 setup.py set-password --user admin` |
-| Change the username | `sudo -u logwatch python3 setup.py set-password --user newname` (sets a new password too) |
-| Set it from a script | `printf '%s\n' "$PW" \| sudo -u logwatch python3 setup.py set-password --user admin --stdin` |
-| Sign everyone out | `sudo -u logwatch python3 setup.py secret SESSION_SECRET --generate` |
+| List users | `sudo -u logwatch python3 setup.py user list` |
+| Add a user (prompts for the password) | `sudo -u logwatch python3 setup.py user add alice --role auditor` |
+| Add an SSO-only user | `sudo -u logwatch python3 setup.py user add bob --role admin --email bob@example.com --no-password` |
+| Change a password | `sudo -u logwatch python3 setup.py user passwd alice` |
+| Change the role | `sudo -u logwatch python3 setup.py user role alice admin` |
+| Set the e-mail used for SSO | `sudo -u logwatch python3 setup.py user email alice alice@example.com` |
+| Rename | `sudo -u logwatch python3 setup.py user rename alice alice.smith` |
+| Disable, enable or delete | `sudo -u logwatch python3 setup.py user disable alice` (`enable`, `delete`) |
+| Reset MFA (lost phone) | `sudo -u logwatch python3 setup.py user mfa-reset alice` |
+| Sign one user out everywhere | `sudo -u logwatch python3 setup.py user signout alice` |
+| Require MFA for password sign-in | `sudo -u logwatch python3 setup.py user policy --mfa-required on` |
+| Locked out: reset the admin | `sudo -u logwatch python3 setup.py set-password` (keeps the current admin name; `--user NAME` creates or resets that admin) |
+| Sign everyone out | `sudo -u logwatch python3 setup.py secret SESSION_SECRET --generate`, then `sudo docker compose restart board` |
+| All options | `sudo -u logwatch python3 setup.py user --help` |
 
-Then restart the board: `sudo docker compose restart board`.
+Passwords need at least 12 characters, and the commands read them from a prompt or from stdin, never from arguments.
+For scripts, use `printf '%s\n' "$PW" | sudo -u logwatch python3 setup.py user passwd alice --stdin`. The board won't
+demote, disable or delete the last admin.
 
-> `set-password` always sets the username too, and `--user` defaults to `admin`. If you use another username, pass it
-> every time. Passwords need at least 12 characters.
+**MFA**: in Settings → Account → Set up MFA, scan the QR code with any authenticator app (Google or Microsoft
+Authenticator, 1Password, Bitwarden, Aegis…). You get 10 one-time recovery codes. With *Require MFA* on, users who
+sign in with a password must set up MFA before they can do anything else. SSO sign-ins rely on the provider's own MFA.
+
+#### Single sign-on (Google, Microsoft, Discord, GitHub, OpenID Connect)
+
+1. In **Users & sign-in → Board URL**, set how users open the board, e.g. `https://logwatch.example.com`. You can also
+   run `setup.py user policy --url https://logwatch.example.com`.
+2. Under **Single sign-on**, pick the type. The form shows the redirect URI, `https://logwatch.example.com/auth/sso/<id>/callback`,
+   and a link to that provider's console.
+3. Create an OAuth app there with that redirect URI, then paste its client ID and secret into the form.
+   - **Google**: Cloud console → APIs & Services → Credentials → OAuth client ID (Web application).
+   - **Microsoft**: Entra ID → App registrations. Set *Tenant* to your directory ID or domain. Multi-tenant
+     (`common`) isn't allowed.
+   - **Discord**: Developer Portal → your application → OAuth2. Discord e-mails count only when they're verified.
+   - **GitHub**: Settings → Developer settings → OAuth Apps. The board uses the account's verified e-mails.
+   - **OpenID Connect** (Authentik, Keycloak, Authelia, Zitadel…): the issuer URL, i.e. the part before
+     `/.well-known/openid-configuration`.
+4. A provider signs in a board user whose **e-mail** matches the verified e-mail it reports. Set that e-mail on each
+   user, or turn on **auto-create** with a role and, ideally, your e-mail domains.
+
+From the VM: `printf '%s\n' "$SECRET" | sudo -u logwatch python3 setup.py user sso add --kind google --client-id ID`,
+plus `sso list`, `sso off ID` and `sso remove ID`.
 
 Who can reach the login is set in `config/config.yaml` under `board:`: `allow_cidrs` (only these networks),
-`open_cidrs` (these skip the login), `session_hours`, and `cf_access` for Cloudflare Access.
+`open_cidrs` (these skip the login and get `open_role`), `session_hours`, and `cf_access` for Cloudflare Access. An
+Access user whose e-mail matches a board user gets that user's role; anyone else gets `cf_access.role`. Both roles
+default to `admin`, so set them to `auditor` if those visitors should only look.
 
 ### Secrets and modules
 
@@ -308,7 +352,8 @@ Manual update any time: run the one-liner again. Your config, secrets and data a
 
 ## 🔐 Security
 
-- Single admin account, PBKDF2 password hashes, signed HttpOnly cookies, login lockout, optional `allow_cidrs`.
+- Users with roles (admin, auditor = view only), PBKDF2 password hashes, TOTP MFA with recovery codes, SSO (Google,
+  Microsoft, Discord, GitHub, OpenID Connect) with PKCE, signed HttpOnly cookies, login lockout, optional `allow_cidrs`.
 - The board's SSH key can only run one dispatcher on each host, which allows only the roles you enabled there and
   validates every argument.
 - Containers run as an unprivileged user with config and secrets mounted read-only.
