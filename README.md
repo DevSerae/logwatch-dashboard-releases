@@ -134,7 +134,7 @@ board's port behind a one-time token from the terminal and hands the port to the
 | **1 · Board** | Port, login, who may reach the board, retention, GeoIP, updates |
 | **2 · Access** | How this VM reaches your servers: direct, **Tailscale**, **NetBird**, **Cloudflare One** or another VPN. Lists exactly which ports and paths must be open, can install and join Tailscale/NetBird for you, and tests every server you enter |
 | **3 · Features** | Turn areas and sources on, each with its inputs, steps and live checks. With Proxmox, **Discover** finds your nodes, VMs and containers |
-| **4 · Servers** | Only what your picks need on each server. **Without AI**: one copy-paste line per server. **With AI**: a prompt for the agent CLI on the VM (Claude Code, Codex, Gemini, OpenCode); it must ask you for access to every server and show every command first |
+| **4 · Servers** | Only what your picks need on each server. **Without AI**: one copy-paste line per server. **With AI**: a prompt to paste into any AI agent (Claude Code, CloudCLI, Codex, Gemini, OpenCode…), on the VM or anywhere that reaches your servers; it must ask you for access to every server and show every command first |
 | **5 · Install** | Run every check, save, build and start; the page turns into the board's login |
 
 Turn on more features later from the board's **Settings → Install features**; only the new pieces show up.
