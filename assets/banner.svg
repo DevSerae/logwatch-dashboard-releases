@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="320" viewBox="0 0 1280 320" role="img" aria-label="Logwatch Dashboard">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d0d14"/>
+      <stop offset="1" stop-color="#17142b"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.22" cy="0.5" r="0.45">
+      <stop offset="0" stop-color="#9085e9" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#9085e9" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a99ff2"/>
+      <stop offset="1" stop-color="#6f62d8"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#ffffff" stroke-opacity="0.035"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="320" rx="20" fill="url(#bg)"/>
+  <rect width="1280" height="320" rx="20" fill="url(#grid)"/>
+  <rect width="1280" height="320" rx="20" fill="url(#glow)"/>
+  <path d="M1040 160 h46 l22 -58 l36 124 l24 -66 h112" fill="none" stroke="#9085e9" stroke-opacity="0.22" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <g transform="translate(120 88)">
+    <rect width="144" height="144" rx="34" fill="url(#tile)"/>
+    <rect x="1" y="1" width="142" height="142" rx="33" fill="none" stroke="#ffffff" stroke-opacity="0.25"/>
+    <g transform="translate(24 24) scale(4)">
+      <path d="M2 12.5h4.5L9 6l5.5 12L17 12.5h5" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+  <text x="312" y="160" fill="#f4f3ff" font-family="Inter, 'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif" font-size="68" font-weight="700" letter-spacing="-1.5">Logwatch Dashboard</text>
+  <text x="314" y="210" fill="#b9b4e6" font-family="Inter, 'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif" font-size="26">Logs, alerts and edge traffic in, a short to-do list out.</text>
+  <g font-family="ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace" font-size="17" fill="#d9d5ff">
+    <rect x="314" y="236" width="140" height="32" rx="16" fill="#9085e9" fill-opacity="0.16" stroke="#9085e9" stroke-opacity="0.45"/>
+    <text x="384" y="257" text-anchor="middle">self-hosted</text>
+    <rect x="466" y="236" width="172" height="32" rx="16" fill="#9085e9" fill-opacity="0.16" stroke="#9085e9" stroke-opacity="0.45"/>
+    <text x="552" y="257" text-anchor="middle">docker compose</text>
+    <rect x="650" y="236" width="164" height="32" rx="16" fill="#9085e9" fill-opacity="0.16" stroke="#9085e9" stroke-opacity="0.45"/>
+    <text x="732" y="257" text-anchor="middle">one-line setup</text>
+  </g>
+</svg>
