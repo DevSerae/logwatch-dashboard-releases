@@ -152,6 +152,7 @@ Description=Logwatch Dashboard update requests
 [Path]
 PathChanged=$DIR/data/update-request.json
 PathChanged=$DIR/data/feature-request.json
+PathChanged=$DIR/data/installer-request.json
 Unit=logwatch-update.service
 
 [Install]
