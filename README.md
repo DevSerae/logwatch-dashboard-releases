@@ -64,56 +64,65 @@ an undo line for everything it installs.
 
 ## ✨ What you get
 
-<table>
-<tr>
-<td width="50%" valign="top">
+**🧾 The board, always on.** One list of things that need a person, each with history, notes, snooze, mute and
+resolve. Also: an **Events** timeline, a **Hosts** view of log ingest per host, a **Logs** explorer on VictoriaLogs
+(any query can become an alert rule), maintenance windows that silence what they cover, GeoIP, and updates you approve.
 
-**🧾 One list of things to do**<br>
-Hosts gone silent, SSH brute force, failed backups, expiring certificates, IPS and Wazuh alerts, CrowdSec bans, down
-services, missing patches. Each item has history, notes, snooze/mute and optional **Resolve with AI**.
+Everything else is a **module**. The setup groups modules into **monitors**; pick only what you use. A module that's
+off runs no collectors, makes no outbound calls and needs no secrets.
 
-</td>
-<td width="50%" valign="top">
+### 🔎 Logs
 
-**🛡️ Edge WAF**<br>
-Every request and connection through your edge hosts on a world map. Custom layer-7 rules, IP/CIDR bans, country/ASN
-rules, OWASP CRS levels and port proxies. Every change starts log-only and is undoable; optional push to Cloudflare.
+| Module | Turn it on and you get |
+|---|---|
+| **Syslog intake** (on by default) | Linux hosts and network gear push syslog (TCP/UDP). Alerts for hosts that go silent, SSH brute force, new logins and your own log rules |
+| **SSH pull** | The same for hosts that can't push: the board pulls their journal over SSH every minute |
+| **Windows events** | Failed logons, service crashes, disk/NTFS errors, reboots and a heartbeat from Windows hosts via Fluent Bit; optional DNS top domains |
+| **Alert file** | Picks up alerts another system already writes as JSON lines (SMB share or local file) |
+| **Webhook** | `POST /api/ingest`: scripts, Uptime Kuma, Grafana or cron jobs raise and clear items |
 
-</td>
-</tr>
-<tr>
-<td valign="top">
+### 🛡️ Edge WAF
 
-**🔎 Logs explorer**<br>
-Syslog (TCP/UDP), SSH journal pull, Windows event logs and NetFlow land in VictoriaLogs. Search them, and turn any
-query into board items with custom rules.
+| Module | Turn it on and you get |
+|---|---|
+| **CrowdSec** | A health card per edge host (engine, LAPI, AppSec, bouncer), bans and WAF blocks, repeat offenders, Ban/Unban from the board |
+| **Request / connection log** | Every HTTP request (Nginx Proxy Manager / nginx) and every new connection (nftables) through your edge, on a world map with filters |
+| **Edge WAF** | Custom layer-7 rules from a rule builder, IP/CIDR bans with expiry, country/ASN rules, OWASP CRS level, and **port proxies** for raw TCP/UDP (game servers…). Every change starts log-only, can be simulated against the last 24 h of traffic, and can be undone. Optional push to Cloudflare |
 
-</td>
-<td valign="top">
+### 📡 Network
 
-**🖥️ Hosts, Infra, Services**<br>
-Proxmox nodes, guests, backups, SMART and ZFS; Wazuh agents, SCA and vulnerabilities; Action1 patches; container image
-CVEs; uptime probes; certificate and domain expiry.
+| Module | Turn it on and you get |
+|---|---|
+| **UniFi** | IPS/IDS alerts, firewall flows, gateway events and WAN health |
+| **NetFlow / IPFIX** | Flows from any NetFlow v5/v9/IPFIX exporter |
 
-</td>
-</tr>
-<tr>
-<td valign="top">
+### 🖥️ Hosts
 
-**🧩 Everything is a module**<br>
-Syslog is on by default; switch on only what you use: Proxmox, UniFi, Windows, NetFlow, CrowdSec, Wazuh, Action1,
-Instatus, webhook, AI. Off means no collectors, no outbound calls, no secrets needed.
+| Module | Turn it on and you get |
+|---|---|
+| **Action1** | Missing patches and reboot-pending endpoints, per host |
+| **Wazuh** | Agent status, SCA score, critical/high vulnerabilities and alerts merged into Hosts; alerts into Logs |
+| **Container image CVEs** | A weekly Trivy scan of the images your containers run, with alerts for fixable HIGH/CRITICAL CVEs |
 
-</td>
-<td valign="top">
+### ⏱️ Services
 
-**🔄 Updates you approve**<br>
-The board tells you when a release is out. Update now, schedule it, or skip it. A host helper verifies, backs up and
-rolls back if the new version doesn't come up.
+| Module | Turn it on and you get |
+|---|---|
+| **Uptime** | A Status tab with HTTP(S)/TCP probes every minute and response-time history. Add checks right on the tab |
+| **Expiry** | TLS certificates, domain registrations (RDAP) and manual dates, warned about ahead of time |
 
-</td>
-</tr>
-</table>
+### 🏗️ Infra
+
+| Module | Turn it on and you get |
+|---|---|
+| **Proxmox VE** | Nodes, guests, storage, backup freshness per guest, SMART and ZFS health, guests that never sent logs. In the setup, **Discover** fills every host list from your cluster |
+
+### 🧪 Extras
+
+| Module | Turn it on and you get |
+|---|---|
+| **Instatus** | Board maintenance windows also post and resolve maintenance on your Instatus page |
+| **Resolve with AI** | Your agent CLI (Claude Code, Codex, Gemini, OpenCode) works an incident while you watch the live transcript on the board |
 
 ## 🧭 The web setup
 
@@ -154,6 +163,7 @@ Turn on more features later from the board's **Settings → Install features**; 
 | **systemd** | recommended | needed for one-click updates from the board |
 | **Network** | outbound HTTPS | GitHub (updates), GeoIP downloads, the APIs you enable |
 | **Reachability** | board ⇄ servers | SSH out to pulled hosts; syslog/NetFlow in from senders. LAN, VPN or overlay all fine |
+| **Firewall** | Docker can forward | if the VM's firewall drops forwarded traffic, allow Docker's bridges out or the containers can't reach anything |
 
 API access is read-only wherever the vendor allows it (Proxmox PVEAuditor, UniFi read-only key, Wazuh readonly role…).
 
