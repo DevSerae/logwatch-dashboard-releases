@@ -44,12 +44,12 @@ ask() {  # ask "question" → 0 = yes; reads the terminal even when piped from c
 [ "$(uname -s)" = Linux ] || die "Linux only"
 case "$(uname -m)" in x86_64|aarch64|arm64) ;; *) die "unsupported CPU $(uname -m): amd64 or arm64 only" ;; esac
 
-OS_ID=unknown
-[ -r /etc/os-release ] && . /etc/os-release && OS_ID="${ID:-unknown}"
+# read os-release in a subshell: it defines VERSION, which would clobber ours
+OS_NAME="$( { [ -r /etc/os-release ] && . /etc/os-release && echo "${PRETTY_NAME:-${ID:-unknown}}"; } || echo unknown)"
 pm=""
 command -v apt-get >/dev/null && pm=apt
 command -v dnf >/dev/null && pm=${pm:-dnf}
-say "System: ${PRETTY_NAME:-$OS_ID} ($(uname -m)), package manager: ${pm:-none found}"
+say "System: $OS_NAME ($(uname -m)), package manager: ${pm:-none found}"
 
 pkg() {  # pkg <apt names> -- <dnf names>
   local apt_names=() dnf_names=() side=apt
