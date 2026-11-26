@@ -24,6 +24,7 @@
   <a href="#-screenshots">Screenshots</a> ·
   <a href="#-prerequisites">Prerequisites</a> ·
   <a href="#-runs-on">Runs on</a> ·
+  <a href="#-admin-commands">Admin commands</a> ·
   <a href="#-updates">Updates</a> ·
   <a href="#-uninstall">Uninstall</a>
 </p>
@@ -236,6 +237,63 @@ Not everyone's network looks the same, so the installer asks instead of assuming
 | **NetBird** | installs and joins with a setup key, self-hosted management URL supported; explains policies and routes |
 | **Cloudflare One** | WARP client steps with headless service-token enrolment and private network routes |
 | **Other** (WireGuard, ZeroTier, OpenVPN…) | checks the interface and shows which one reaches each server |
+
+## 🔧 Admin commands
+
+Run these on the board's VM, from the install directory. Run `setup.py` as the `logwatch` user: as root it would leave
+`secrets/secrets.env` owned by root, and the board couldn't read it.
+
+```bash
+cd /opt/logwatch-dashboard
+```
+
+### Login
+
+The board has **one admin account**. These commands change it; the old password isn't needed, so they also work when
+you've forgotten it.
+
+| Task | Command |
+|---|---|
+| Change the password | `sudo -u logwatch python3 setup.py set-password --user admin` |
+| Change the username | `sudo -u logwatch python3 setup.py set-password --user newname` (sets a new password too) |
+| Set it from a script | `printf '%s\n' "$PW" \| sudo -u logwatch python3 setup.py set-password --user admin --stdin` |
+| Sign everyone out | `sudo -u logwatch python3 setup.py secret SESSION_SECRET --generate` |
+
+Then restart the board: `sudo docker compose restart board`.
+
+> `set-password` always sets the username too, and `--user` defaults to `admin`. If you use another username, pass it
+> every time. Passwords need at least 12 characters.
+
+Who can reach the login is set in `config/config.yaml` under `board:`: `allow_cidrs` (only these networks),
+`open_cidrs` (these skip the login), `session_hours`, and `cf_access` for Cloudflare Access.
+
+### Secrets and modules
+
+| Task | Command |
+|---|---|
+| Store or replace an API key / token | `sudo -u logwatch python3 setup.py secret PROXMOX_TOKEN` (prompts, never printed) |
+| Generate a random token | `sudo -u logwatch python3 setup.py secret INGEST_TOKEN --generate` |
+| List modules | `sudo -u logwatch python3 setup.py modules` |
+| Turn modules on / off | `sudo -u logwatch python3 setup.py modules --enable uptime,expiry --disable netflow` |
+| Check config and required secrets | `sudo -u logwatch python3 setup.py check` |
+| Apply config changes | `sudo -u logwatch python3 setup.py render && sudo docker compose up -d --build && sudo docker compose restart board worker` |
+| The board's SSH public key | `sudo -u logwatch python3 setup.py pubkey` |
+| Env file for the AI runner | `sudo -u logwatch python3 setup.py runner-env --out runner.env --url https://logwatch.example.com` |
+
+After editing `config/config.yaml` by hand, run the *Apply config changes* line. You can also turn on new features from
+the board: **Settings → Install features**.
+
+### Service
+
+| Task | Command |
+|---|---|
+| Status | `sudo docker compose ps` |
+| Follow the logs | `sudo docker compose logs -f board worker` |
+| Restart | `sudo docker compose restart board worker` |
+| Stop / start | `sudo docker compose stop` / `sudo docker compose up -d` |
+| Update to a version now | `sudo ./update.sh --version 2.2.1` |
+| Update logs | `/var/log/logwatch-update-<version>.log` |
+| Backups made before each update | `/var/backups/logwatch-dashboard` (last 3) |
 
 ## 🔄 Updates
 
