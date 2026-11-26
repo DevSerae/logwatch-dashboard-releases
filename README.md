@@ -15,8 +15,13 @@
 </p>
 
 <p align="center">
+  <img src="assets/board-needs-action.png" alt="Needs action: everything that needs a person, with details, AI resolve, snooze and mute" width="100%">
+</p>
+
+<p align="center">
   <a href="#-quick-start">Quick start</a> ·
   <a href="#-what-you-get">What you get</a> ·
+  <a href="#-screenshots">Screenshots</a> ·
   <a href="#-prerequisites">Prerequisites</a> ·
   <a href="#-runs-on">Runs on</a> ·
   <a href="#-updates">Updates</a> ·
@@ -81,6 +86,10 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 | **Alert file** | Picks up alerts another system already writes as JSON lines (SMB share or local file) |
 | **Webhook** | `POST /api/ingest`: scripts, Uptime Kuma, Grafana or cron jobs raise and clear items |
 
+<p align="center">
+  <img src="assets/board-logs.png" alt="Logs explorer on VictoriaLogs with per-source volume and a query bar" width="88%">
+</p>
+
 ### 🛡️ Edge WAF
 
 | Module | Turn it on and you get |
@@ -88,6 +97,10 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 | **CrowdSec** | A health card per edge host (engine, LAPI, AppSec, bouncer), bans and WAF blocks, repeat offenders, Ban/Unban from the board |
 | **Request / connection log** | Every HTTP request (Nginx Proxy Manager / nginx) and every new connection (nftables) through your edge, on a world map with filters |
 | **Edge WAF** | Custom layer-7 rules from a rule builder, IP/CIDR bans with expiry, country/ASN rules, OWASP CRS level, and **port proxies** for raw TCP/UDP (game servers…). Every change starts log-only, can be simulated against the last 24 h of traffic, and can be undone. Optional push to Cloudflare |
+
+<p align="center">
+  <img src="assets/board-edge-traffic.png" alt="Edge WAF: node health, traffic, countries and networks through the edge" width="88%">
+</p>
 
 ### 📡 Network
 
@@ -104,6 +117,10 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 | **Wazuh** | Agent status, SCA score, critical/high vulnerabilities and alerts merged into Hosts; alerts into Logs |
 | **Container image CVEs** | A weekly Trivy scan of the images your containers run, with alerts for fixable HIGH/CRITICAL CVEs |
 
+<p align="center">
+  <img src="assets/board-hosts.png" alt="Hosts: log ingest per host, silent hosts, Action1 patches and Wazuh agents" width="88%">
+</p>
+
 ### ⏱️ Services
 
 | Module | Turn it on and you get |
@@ -111,11 +128,19 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 | **Uptime** | A Status tab with HTTP(S)/TCP probes every minute and response-time history. Add checks right on the tab |
 | **Expiry** | TLS certificates, domain registrations (RDAP) and manual dates, warned about ahead of time |
 
+<p align="center">
+  <img src="assets/board-status.png" alt="Status: uptime probes with response-time history" width="88%">
+</p>
+
 ### 🏗️ Infra
 
 | Module | Turn it on and you get |
 |---|---|
 | **Proxmox VE** | Nodes, guests, storage, backup freshness per guest, SMART and ZFS health, guests that never sent logs. In the setup, **Discover** fills every host list from your cluster |
+
+<p align="center">
+  <img src="assets/board-infra.png" alt="Infra: Proxmox nodes, backups, disks, ZFS, WAN and expiry dates" width="88%">
+</p>
 
 ### 🧪 Extras
 
@@ -123,6 +148,23 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 |---|---|
 | **Instatus** | Board maintenance windows also post and resolve maintenance on your Instatus page |
 | **Resolve with AI** | Your agent CLI (Claude Code, Codex, Gemini, OpenCode) works an incident while you watch the live transcript on the board |
+
+## 📸 Screenshots
+
+All screenshots are from a demo board with made-up data.
+
+<details>
+<summary><b>More of the board</b></summary>
+<br>
+<p align="center">
+  <img src="assets/board-item-details.png" alt="An item's details: what happened, related log lines and history" width="88%"><br><br>
+  <img src="assets/board-edge-threats.png" alt="Edge WAF in threats mode: bans and WAF blocks over the last day" width="88%"><br><br>
+  <img src="assets/board-waf-rule-builder.png" alt="WAF rule builder: a custom layer-7 rule that starts log-only" width="88%"><br><br>
+  <img src="assets/board-events.png" alt="Events: what the collectors logged, by severity, and how long each check took" width="88%"><br><br>
+  <img src="assets/board-customise.png" alt="Customise: theme, accent, density, refresh, layout and tab order" width="88%"><br><br>
+  <img src="assets/board-mobile.png" alt="The board on a phone" width="30%">
+</p>
+</details>
 
 ## 🧭 The web setup
 
