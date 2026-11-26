@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Logwatch Dashboard: install or update on this VM, then open the setup TUI.
+# Logwatch Dashboard: install or update on this VM, then open the web setup on the board's port.
 #
 #   curl -fsSL https://github.com/DevSerae/logwatch-dashboard-releases/releases/latest/download/install.sh | sudo bash
 #   (or download it, read it, then: sudo bash install.sh)
@@ -7,7 +7,7 @@
 # Options: --dir /opt/logwatch-dashboard   install directory
 #          --version 2.0.0                 a specific release (default: latest)
 #          --yes                           install Docker without asking if it's missing
-#          --no-tui                        install/update only
+#          --no-setup                      install/update only (don't start the web setup)
 # Re-running updates the code in place; config/, secrets/, data/ and .env are never touched.
 # Undo: cd <dir> && docker compose down -v; systemctl disable --now logwatch-update.path logwatch-update.timer
 #       rm -rf <dir> /etc/systemd/system/logwatch-update.* /etc/default/logwatch-dashboard /var/backups/logwatch-dashboard
@@ -18,13 +18,13 @@ REPO="${LW_RELEASES:-https://github.com/DevSerae/logwatch-dashboard-releases}"
 DIR=/opt/logwatch-dashboard
 VERSION=latest
 YES=0
-TUI=1
+SETUP=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --dir) DIR="$2"; shift 2 ;;
     --version) VERSION="${2#v}"; shift 2 ;;
     --yes|-y) YES=1; shift ;;
-    --no-tui) TUI=0; shift ;;
+    --no-setup|--no-tui) SETUP=0; shift ;;
     -h|--help) sed -n '2,14p' "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -101,7 +101,7 @@ id logwatch >/dev/null 2>&1 || { say "Creating system user logwatch (owns $DIR; 
   useradd --system --home-dir "$DIR" --no-create-home --shell /usr/sbin/nologin logwatch; }
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || true)"
-if [ -n "$here" ] && [ -f "$here/installer/tui.py" ] && [ -f "$here/VERSION" ]; then
+if [ -n "$here" ] && [ -f "$here/installer/web.py" ] && [ -f "$here/VERSION" ]; then
   src="$here"   # run from an unpacked release
   say "Using the unpacked release in $src ($(cat "$src/VERSION"))"
 else
@@ -178,10 +178,9 @@ say "Preparing the installer's Python environment ($DIR/.venv)"
 "$DIR/.venv/bin/pip" install -q --disable-pip-version-check -r "$DIR/installer/requirements.txt"
 
 echo
-echo "Installed in $DIR. Open the setup again any time with:"
-echo "  sudo $DIR/.venv/bin/python -m installer      (from $DIR)"
-echo "  or: sudo bash $DIR/install.sh"
-[ "$TUI" = 1 ] || exit 0
-[ -r /dev/tty ] || { echo "No terminal: run the line above from an SSH session."; exit 0; }
+echo "Installed in $DIR. Open the setup again any time (web page on the board's port, or the next free one):"
+echo "  sudo bash $DIR/install.sh        or: cd $DIR && sudo .venv/bin/python -m installer"
+[ "$SETUP" = 1 ] || exit 0
 cd "$DIR"
-exec "$DIR/.venv/bin/python" -m installer < /dev/tty > /dev/tty 2>&1
+say "Starting the web setup: open the URL below in your browser (Ctrl+C stops it)"
+exec "$DIR/.venv/bin/python" -m installer

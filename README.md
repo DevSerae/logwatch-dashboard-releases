@@ -34,7 +34,8 @@ curl -fsSL https://github.com/DevSerae/logwatch-dashboard-releases/releases/late
 ```
 
 That's it. The script installs what's missing (it **asks** before installing Docker), puts the board in
-`/opt/logwatch-dashboard` and opens a setup TUI that walks you through the rest. Then open `http://<vm>:8080`.
+`/opt/logwatch-dashboard` and starts the web setup on the board's port. Open the link it prints (it carries a one-time
+token); when you're done, the same page turns into the board at `http://<vm>:8080`.
 
 <details>
 <summary><b>Prefer to read it first?</b> (recommended)</summary>
@@ -42,7 +43,7 @@ That's it. The script installs what's missing (it **asks** before installing Doc
 ```bash
 curl -fsSLO https://github.com/DevSerae/logwatch-dashboard-releases/releases/latest/download/install.sh
 less install.sh
-sudo bash install.sh            # --dir <path> · --version <x.y.z> · --yes · --no-tui
+sudo bash install.sh            # --dir <path> · --version <x.y.z> · --yes · --no-setup
 ```
 
 Or download the tarball from [Releases](https://github.com/DevSerae/logwatch-dashboard-releases/releases/latest),
@@ -55,7 +56,7 @@ check it against `SHA256SUMS`, unpack and run `sudo bash logwatch-dashboard/inst
 Give the agent a shell on the board VM (and SSH to the servers it should set up), then say:
 
 > Install Logwatch Dashboard from https://github.com/DevSerae/logwatch-dashboard-releases: run its install.sh with
-> `--no-tui`, then follow AGENT_INSTALL.md in /opt/logwatch-dashboard.
+> `--no-setup`, then follow AGENT_INSTALL.md in /opt/logwatch-dashboard.
 
 The playbook makes it interview you first, ask before touching any machine, keep secrets out of the chat, and give you
 an undo line for everything it installs.
@@ -114,27 +115,31 @@ rolls back if the new version doesn't come up.
 </tr>
 </table>
 
-## 🧭 The setup TUI
+## 🧭 The web setup
 
-Four tabs, everything optional, every module expands to exactly the inputs it needs.
+Five steps in your browser, everything optional, every feature expands to exactly the inputs it needs. It runs on the
+board's port behind a one-time token from the terminal and hands the port to the board when it's done.
 
 | | |
 |---|---|
 | **1 · Board** | Port, login, who may reach the board, retention, GeoIP, updates |
-| **2 · Access** | How this VM reaches your servers: direct, **Tailscale**, **NetBird**, **Cloudflare One** or another VPN. It shows what to set up, can install and join Tailscale/NetBird for you, and tests every server you enter |
-| **3 · Monitors** | Turn monitors and modules on. Each one has the steps for the target machines (or a prompt to paste into your AI agent) and live checks. With Proxmox, **Discover** finds your nodes, VMs and containers |
-| **4 · Install** | Run every check, save, start the containers, wait for the board |
+| **2 · Access** | How this VM reaches your servers: direct, **Tailscale**, **NetBird**, **Cloudflare One** or another VPN. Lists exactly which ports and paths must be open, can install and join Tailscale/NetBird for you, and tests every server you enter |
+| **3 · Features** | Turn areas and sources on, each with its inputs, steps and live checks. With Proxmox, **Discover** finds your nodes, VMs and containers |
+| **4 · Servers** | Only what your picks need on each server. **Without AI**: one copy-paste line per server. **With AI**: a prompt for the agent CLI on the VM (Claude Code, Codex, Gemini, OpenCode); it must ask you for access to every server and show every command first |
+| **5 · Install** | Run every check, save, build and start; the page turns into the board's login |
+
+Turn on more features later from the board's **Settings → Install features**; only the new pieces show up.
 
 <p align="center">
-  <img src="assets/installer-monitors.png" alt="Monitors tab: the Wazuh module expanded with its inputs" width="88%">
+  <img src="assets/setup-servers.png" alt="Servers step: one copy-paste line per server for the features you picked" width="88%">
 </p>
 
 <details>
 <summary><b>More screenshots</b></summary>
 <br>
 <p align="center">
-  <img src="assets/installer-access.png" alt="Access tab: direct, Tailscale and NetBird with setup steps" width="88%"><br><br>
-  <img src="assets/installer-discover.png" alt="Discover from Proxmox: nodes, VMs and containers with their IPs" width="88%">
+  <img src="assets/setup-access.png" alt="Access step: direct access with the exact ports and paths to open" width="88%"><br><br>
+  <img src="assets/setup-ai.png" alt="Servers step with AI: the agent CLIs found on the VM and the prompt to start one" width="88%">
 </p>
 </details>
 
