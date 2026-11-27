@@ -119,7 +119,29 @@ RULES = """## How to work
    have. Stop instead and say exactly what is needed.
 4. Don't resolve, mute or snooze {items} on the board; the operator checks your work and presses Resolve.
 5. Never print secrets (tokens, passwords, keys) in your output.
+{ask}"""
+
+ASK_RULE = """6. If one concrete action you couldn't take under rule 3 would fix it, prepare everything that is safe (diagnose, back up,
+   download) and then ask for it: answer `needs_approval` and put the exact action on the APPROVAL line, specific
+   enough to run as written (host, path, command, what you back up first). The board shows it to the operator with
+   Approve / Deny buttons; Approve starts a new run that is allowed to do exactly that. Ask for one action, not a menu.
 """
+
+
+def ask_rule(job):
+    return ASK_RULE if (job.get("board") or {}).get("approvals") else ""
+
+
+def approved(job):
+    """The action the operator approved on the board for this run (after an earlier run asked for it)."""
+    a = (job.get("approved") or "").strip()
+    return f"""
+## Approved by the operator
+An earlier run on this incident asked for approval and the operator approved exactly this action:
+> {a}
+Carry it out now, as written, then verify that it fixed the incident. This approval covers that action only:
+anything beyond it still falls under rule 3.
+""" if a else ""
 
 
 def prompt(job):
@@ -128,11 +150,11 @@ def prompt(job):
 network. {job.get('who') or 'The operator'} started this with the board's "Resolve with AI" button and can read your
 transcript live on the board, but this is a headless run: you cannot ask questions and nobody will answer mid-run.
 
-{incident(job)}{notes()}
-{RULES.format(scope="this incident", items="the item")}
+{incident(job)}{notes()}{approved(job)}
+{RULES.format(scope="this incident", items="the item", ask=ask_rule(job))}
 ## End your final message with exactly this block (the board parses it):
-OUTCOME: fixed   (or: not_fixed)
-SUMMARY:
+OUTCOME: fixed   (or: {"not_fixed, or needs_approval" if ask_rule(job) else "not_fixed"})
+{"APPROVAL: <only with needs_approval: the one action, on one line>" + chr(10) if ask_rule(job) else ""}SUMMARY:
 Cause: <one or two sentences>
 Changed: <what you changed, where; or "nothing" and why>
 Verified: <how you checked; or what the operator must do>
@@ -142,8 +164,9 @@ Verified: <how you checked; or what the operator must do>
 def group_prompt(job):
     b, runs = job.get("board") or {}, job["runs"]
     blocks = "\n".join(incident(r, f"## Incident {n}", 15) for n, r in enumerate(runs, 1))
-    ends = "\n\n".join(f"""OUTCOME {n}: fixed   (or: not_fixed)
-SUMMARY {n}:
+    asks = ask_rule(job) or ask_rule(runs[0])
+    ends = "\n\n".join(f"""OUTCOME {n}: fixed   (or: {"not_fixed, or needs_approval" if asks else "not_fixed"})
+{f"APPROVAL {n}: <only with needs_approval: the one action for this incident, on one line>" + chr(10) if asks else ""}SUMMARY {n}:
 Cause: <one or two sentences>
 Changed: <what you changed, where; or "nothing" and why>
 Verified: <how you checked; or what the operator must do>""" for n in range(1, len(runs) + 1))
@@ -156,31 +179,37 @@ Work on them together: incidents that share a cause (same host, same storage, sa
 fixed once, not {len(runs)} times. Then check each incident on its own.
 
 {blocks}{notes()}
-{RULES.format(scope="these incidents", items="the items")}
+{RULES.format(scope="these incidents", items="the items", ask=asks)}
 ## End your final message with one block per incident, in this exact format (the board parses it and shows each block
 ## on its own incident; repeat a shared cause in each block it applies to):
 {ends}
 """
 
 
+OUTCOMES = r"(needs_approval|not_fixed|fixed)"
+
+
 def parse_group(result, n):
-    """Per-incident (outcome, summary) from "OUTCOME <n>: … SUMMARY <n>: …" blocks; whole tail when one is missing."""
+    """Per-incident (outcome, summary, ask) from "OUTCOME <n>: … [APPROVAL <n>: …] SUMMARY <n>: …" blocks; whole tail
+    when one is missing."""
     res, text = [], result or ""
     for k in range(1, n + 1):
-        m = re.search(rf"OUTCOME {k}:\s*(not_fixed|fixed)(.*?)(?=OUTCOME \d+:|\Z)", text, re.S | re.I)
+        m = re.search(rf"OUTCOME {k}:\s*{OUTCOMES}(.*?)(?=OUTCOME \d+:|\Z)", text, re.S | re.I)
         if not m:
-            res.append(("unknown", text[-1500:].strip()))
+            res.append(("unknown", text[-1500:].strip(), ""))
             continue
         sm = re.search(rf"SUMMARY {k}:\s*(.+)", m.group(2), re.S | re.I)
-        res.append((m.group(1).lower(), (sm.group(1) if sm else m.group(2)).strip()))
+        am = re.search(rf"APPROVAL {k}:[ \t]*(.+)", m.group(2), re.I)
+        res.append((m.group(1).lower(), (sm.group(1) if sm else m.group(2)).strip(), am.group(1).strip() if am else ""))
     return res
 
 
 def parse_outcome(result):
-    m = re.search(r"OUTCOME:\s*(not_fixed|fixed)", result or "", re.I)
+    m = re.search(rf"OUTCOME:\s*{OUTCOMES}", result or "", re.I)
     s = re.search(r"SUMMARY:\s*(.+)", result or "", re.S | re.I)
+    a = re.search(r"APPROVAL:[ \t]*(.+)", result or "", re.I)
     summary = (s.group(1) if s else (result or "")[-1500:]).strip()
-    return (m.group(1).lower() if m else "unknown"), summary
+    return (m.group(1).lower() if m else "unknown"), summary, a.group(1).strip() if a else ""
 
 
 # --- adapters: build the command and turn its stdout lines into board steps ---------------------------------------
@@ -409,20 +438,20 @@ def run(board, job):
         tr.final = "".join(raw)
         tr.text(tr.final[-20000:])
     stderr = "".join(errbuf)
-    outcome, summary = parse_outcome(tr.final)
+    outcome, summary, ask = parse_outcome(tr.final)
     if p.returncode and not err:
         err = f"{agent} exited {p.returncode}: " + (failed_hint(agent, stderr) or "no error output")
     if err:
         READY["at"] = 0
     ferr = err[-800:] if (err and (p.returncode or not tr.final)) else ""
     if group:   # one finish per incident: its own outcome block; the transcript stays on the lead run
-        for r, (o, sm) in zip(job["runs"], parse_group(tr.final, len(job["runs"]))):
-            board.post(f"/api/runner/finish/{r['id']}", {"outcome": o, "summary": trim(sm, 6000), "err": ferr,
+        for r, (o, sm, a) in zip(job["runs"], parse_group(tr.final, len(job["runs"]))):
+            board.post(f"/api/runner/finish/{r['id']}", {"outcome": o, "summary": trim(sm, 6000), "err": ferr, "ask": trim(a, 1000),
                                                          "log": tr.steps[-400:] if r["id"] == rid else []})
         log("done", rid, "group", f"rc={p.returncode}")
         return
     board.post(f"/api/runner/finish/{rid}", {"outcome": outcome, "summary": trim(summary, 6000), "log": tr.steps[-400:],
-                                             "err": ferr})
+                                             "err": ferr, "ask": trim(ask, 1000)})
     log("done", rid, outcome, f"rc={p.returncode}")
 
 

@@ -609,6 +609,7 @@ def board(request: Request, show: str = ""):
         tls_t = db.targets(con, "tls")
     in_maint = [i for i in items if i["kind"] != "todo" and db.in_maint(maint_now, i["key"], i["source"])]
     items = [i for i in items if i not in in_maint]
+    asks = [dict(ai[i["key"]][0], title=i["title"]) for i in items + in_maint if ai_pending((ai.get(i["key"]) or [None])[0])]
     targets = [dict(t, kind=t.get("kind", "http"), group=t.get("group") or "Other", **(up.get(t["name"]) or {})) for t in ut]
     for t in targets:  # what the edit button loads into the builder; secrets never go to the page
         t["spec"] = {k: v for k, v in t.items() if k in ("name", "url", "host", "port", "group", "method", "headers", "body", "expect",
@@ -650,7 +651,7 @@ def board(request: Request, show: str = ""):
                       tab=request.query_params.get("tab", ""), csctl_hosts=CSCTL_HOSTS,
                       todos=sum(1 for i in items if i["kind"] == "todo"), hosts_missing=hosts_missing,
                       clean_view=BOARD.get("clean_view") or [], edge_nodes=CSCTL_HOSTS, targets=targets, up_stats=up_stats, tls_targets=tls_t, maint=maint, maint_now=maint_now,
-                      in_maint=in_maint, instatus=bool(INSTATUS and secret("INSTATUS_API_KEY")), ai=ai, viewer_ip=viewer_ip(request),
+                      in_maint=in_maint, ai_asks=asks, instatus=bool(INSTATUS and secret("INSTATUS_API_KEY")), ai=ai, viewer_ip=viewer_ip(request),
                       mods=MODS, title=TITLE, host_label=HOST_LABEL, user=request.state.user, role=request.state.role, ai_agent=AI_AGENT,
                       log_rules=bool(C.CONFIG.get("log_rules")), geoip=geo_provider(),
                       up_bad=sum(1 for t in targets if t.get("last") and not t["last"]["ok"]), chart_data={"days": days, "volume": volume.get("hours") and {
@@ -984,7 +985,13 @@ AI_CHAT = (AI.get("chat_url") or "").strip()  # optional: link to the agent's ow
 AI_AGENT = AI.get("agent_label") or "AI agent"
 AI_ACTIVE = ("queued", "running")
 AI_GROUP_MAX = 20   # incidents per combined bulk run (one prompt)
-OUTCOME_NOTE = {"fixed": "AI fixed: check", "not_fixed": "AI couldn't fix", "unknown": "AI finished"}
+OUTCOME_NOTE = {"fixed": "AI fixed: check", "not_fixed": "AI couldn't fix", "needs_approval": "AI needs your OK", "unknown": "AI finished"}
+
+
+
+def ai_pending(run):
+    """Is this (latest) run waiting for the operator's OK?"""
+    return bool(run and run["state"] == "done" and run["outcome"] == "needs_approval" and run.get("ask") and not run.get("decision"))
 
 
 def chat_url(rid):
@@ -992,7 +999,7 @@ def chat_url(rid):
 
 
 def ai_runs(con, key, full=True):
-    cols = "*" if full else "id, key, state, outcome, summary, err, who, created, started, finished"
+    cols = "*" if full else "id, key, state, outcome, summary, err, who, created, started, finished, ask, decision, decided_by, approved"
     out = []
     for r in con.execute(f"SELECT {cols} FROM ai_runs WHERE key=? ORDER BY created DESC", (key,)):
         d = dict(r)
@@ -1051,10 +1058,41 @@ def ai_start_bulk(request: Request, keys: list[str] = Form(...)):
     return {"grp": grp, "runs": out, "skipped": skipped}
 
 
+@app.post("/ai/decide")
+def ai_decide(request: Request, rid: str = Form(...), decision: str = Form(...)):
+    """Answer a run that asked for the operator's OK (outcome needs_approval). approve: a follow-up run is queued that
+    carries out exactly that action (the runner puts it in the prompt as approved); deny: noted, nothing runs."""
+    if not MODS["ai"] or decision not in ("approve", "deny"):
+        raise HTTPException(404)
+    now, by, new = time.time(), who(request), ""
+    with db.connect() as con:
+        r = con.execute("SELECT key, ask FROM ai_runs WHERE id=? AND state='done' AND outcome='needs_approval' AND decision=''",
+                        (rid,)).fetchone()
+        if not r or not r["ask"]:
+            raise HTTPException(409, "this run isn't waiting for an answer any more")
+        it = con.execute("SELECT state FROM items WHERE key=?", (r["key"],)).fetchone()
+        if decision == "approve" and (not it or it["state"] not in ("open", "snoozed")):
+            raise HTTPException(400, "the item isn't open any more")
+        if decision == "approve" and con.execute(f"SELECT 1 FROM ai_runs WHERE key=? AND state IN ({','.join('?' * len(AI_ACTIVE))})",
+                                                 (r["key"], *AI_ACTIVE)).fetchone():
+            raise HTTPException(409, "another AI run is already going for this item")
+        con.execute("UPDATE ai_runs SET decision=?, decided_by=? WHERE id=?", ("approved" if decision == "approve" else "denied", by, rid))
+        if decision == "approve":
+            new = str(uuid.uuid4())
+            con.execute("INSERT INTO ai_runs (id, key, who, created, approved) VALUES (?, ?, ?, ?, ?)", (new, r["key"], by, now, r["ask"]))
+            db.history(con, r["key"], "AI approved", r["ask"][:300], by)
+        else:
+            db.history(con, r["key"], "AI denied", r["ask"][:300], by)
+    if request.headers.get("x-want") == "json":
+        return {"id": new}
+    return RedirectResponse("/", status_code=303)
+
+
 @app.get("/api/ai/{rid}")
 def ai_status(rid: str):
     with db.connect() as con:
-        r = con.execute("SELECT key, state, outcome, summary, err, log, started, finished, grp FROM ai_runs WHERE id=?",
+        r = con.execute("SELECT key, state, outcome, summary, err, log, started, finished, grp, ask, decision, decided_by, approved "
+                        "FROM ai_runs WHERE id=?",
                         (rid,)).fetchone()
         seen = db.kv_get(con, "ai_runner_seen", 0)
         if not r:
@@ -1119,7 +1157,7 @@ async def runner_claim(request: Request):
                   for b in con.execute("SELECT id, prompt FROM ai_briefs WHERE state='queued' ORDER BY created")]
         for b in briefs:
             con.execute("UPDATE ai_briefs SET state='running' WHERE id=?", (b["id"],))
-        rows = [dict(r) for r in con.execute("SELECT id, key, who, grp FROM ai_runs WHERE state='queued' ORDER BY created, rowid")]
+        rows = [dict(r) for r in con.execute("SELECT id, key, who, grp, approved FROM ai_runs WHERE state='queued' ORDER BY created, rowid")]
         if not (isinstance(info, dict) and info.get("groups")):
             # runners before 2.6.1 would start one agent session per item: a bulk selection waits for an updated runner
             multi = {g for g, in con.execute("SELECT grp FROM ai_runs WHERE grp!='' GROUP BY grp HAVING COUNT(*) > 1")}
@@ -1136,7 +1174,7 @@ async def runner_claim(request: Request):
             out.append(r)
     for r in out:
         r["tokens"], r["query"], r["logs"] = related_logs(r["item"], limit=40 if not r["grp"] else 15)
-        r["board"] = {"title": TITLE, "host_label": HOST_LABEL}
+        r["board"] = {"title": TITLE, "host_label": HOST_LABEL, "approvals": True}   # runner may answer needs_approval
     if isinstance(info, dict) and info.get("groups"):   # runners from 2.6.1: a bulk selection is one job, one prompt
         jobs, by = [], {}
         for r in out:
@@ -1189,21 +1227,25 @@ async def runner_progress(request: Request, rid: str):
 
 @app.post("/api/runner/finish/{rid}")
 async def runner_finish(request: Request, rid: str):
-    """Body {outcome: fixed|not_fixed|unknown, summary, log, err}."""
+    """Body {outcome: fixed|not_fixed|needs_approval|unknown, summary, log, err, ask}. ask: the one action the agent wants
+    the operator's OK for (with needs_approval; without it, the run counts as not_fixed)."""
     runner_auth(request)
     res = await request.json()
     outcome = res.get("outcome") if res.get("outcome") in OUTCOME_NOTE else "unknown"
+    ask = " ".join(str(res.get("ask") or "").split())[:1000] if outcome == "needs_approval" else ""
+    if outcome == "needs_approval" and not ask:
+        outcome = "not_fixed"
     state = "failed" if res.get("err") and not res.get("summary") else "done"
     with db.connect() as con:
         r = con.execute("SELECT key FROM ai_runs WHERE id=?", (rid,)).fetchone()
         if not r:
             raise HTTPException(404)
-        con.execute("UPDATE ai_runs SET state=?, outcome=?, summary=?, log=?, err=?, finished=? WHERE id=?",
+        con.execute("UPDATE ai_runs SET state=?, outcome=?, summary=?, log=?, err=?, finished=?, ask=? WHERE id=?",
                     (state, outcome, str(res.get("summary") or "")[:6000], json.dumps(res.get("log") or [])[:600000],
-                     str(res.get("err") or "")[:1000], time.time(), rid))
+                     str(res.get("err") or "")[:1000], time.time(), ask if state == "done" else "", rid))
         ai_outcome(con, res.get("err") if state == "failed" else "")
         note = "AI run failed" if state == "failed" else OUTCOME_NOTE[outcome]
-        first = (res.get("err") if state == "failed" else (res.get("summary") or "").strip().split("\n")[0]) or ""
+        first = (res.get("err") if state == "failed" else ask if ask else (res.get("summary") or "").strip().split("\n")[0]) or ""
         db.history(con, r["key"], note, str(first)[:300], AI_AGENT)
     return {"ok": True}
 
