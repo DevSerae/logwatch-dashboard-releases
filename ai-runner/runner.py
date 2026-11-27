@@ -111,6 +111,16 @@ def notes():
     return ""
 
 
+def knowns(job):
+    """Facts the operator recorded on the board (Knowns): true, and they win over what the logs seem to say."""
+    ks = [k for k in job.get("knowns") or [] if isinstance(k, dict) and k.get("text")]
+    if not ks:
+        return ""
+    return "\n## Knowns (facts from the operator; treat them as true)\n" + "\n".join(
+        f"- {k['text']}" + (f" (covers board items matching `{k['match']}`)" if k.get("match") else "") for k in ks[:100]) + \
+        "\nIf a known explains the incident (e.g. something is down on purpose), change nothing and say so.\n"
+
+
 RULES = """## How to work
 1. Use whatever you already know about this environment (your instructions, memory, notes above) before acting.
 2. Find the root cause, apply the smallest safe fix, and verify it actually worked.
@@ -128,7 +138,7 @@ def prompt(job):
 network. {job.get('who') or 'The operator'} started this with the board's "Resolve with AI" button and can read your
 transcript live on the board, but this is a headless run: you cannot ask questions and nobody will answer mid-run.
 
-{incident(job)}{notes()}
+{incident(job)}{knowns(job)}{notes()}
 {RULES.format(scope="this incident", items="the item")}
 ## End your final message with exactly this block (the board parses it):
 OUTCOME: fixed   (or: not_fixed)
@@ -155,7 +165,7 @@ and nobody will answer mid-run.
 Work on them together: incidents that share a cause (same host, same storage, same service) should be investigated and
 fixed once, not {len(runs)} times. Then check each incident on its own.
 
-{blocks}{notes()}
+{blocks}{knowns(job)}{notes()}
 {RULES.format(scope="these incidents", items="the items")}
 ## End your final message with one block per incident, in this exact format (the board parses it and shows each block
 ## on its own incident; repeat a shared cause in each block it applies to):

@@ -475,6 +475,8 @@ def main():
     s.add_argument("--disable")
     s = sub.add_parser("user", add_help=False, help="users, roles, MFA, SSO (setup.py user --help)")
     s.add_argument("args", nargs=argparse.REMAINDER)
+    s = sub.add_parser("knowns", add_help=False, help="facts the AI treats as true: knowns list | add TEXT [--match M] | rm ID")
+    s.add_argument("args", nargs=argparse.REMAINDER)
     sub.add_parser("check")
     sub.add_parser("render")
     sub.add_parser("pubkey")
@@ -483,6 +485,8 @@ def main():
     s.add_argument("--url", required=True, help="how the runner machine reaches the board, e.g. https://logwatch.example.com")
     if sys.argv[1:2] == ["user"]:  # everything after `user` goes to usercli.py as is (incl. --help)
         return cmd_user(argparse.Namespace(args=sys.argv[2:]))
+    if sys.argv[1:2] == ["knowns"]:  # setup.py knowns list|add|edit|rm ... = setup.py user knowns ...
+        return cmd_user(argparse.Namespace(args=["knowns", *sys.argv[2:]]))
     a = p.parse_args()
     {"wizard": cmd_wizard, "init": cmd_init, "set-password": cmd_set_password, "user": cmd_user, "secret": cmd_secret, "modules": cmd_modules, "check": cmd_check,
      "render": cmd_render, "pubkey": cmd_pubkey, "runner-env": cmd_runner_env}[a.cmd](a)

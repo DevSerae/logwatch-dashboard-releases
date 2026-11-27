@@ -82,6 +82,7 @@ default to `admin`, so set them to `auditor` if those visitors should only look.
 | Apply config changes | `sudo -u logwatch python3 setup.py render && sudo docker compose up -d --build && sudo docker compose restart board worker` |
 | The board's SSH public key | `sudo -u logwatch python3 setup.py pubkey` |
 | Env file for the AI runner | `sudo -u logwatch python3 setup.py runner-env --out runner.env --url https://logwatch.example.com` |
+| Knowns (facts the AI treats as true) | `sudo python3 setup.py knowns list` · `knowns add "Brimstone is down on purpose" --match brimstone` · `knowns rm ID` |
 
 After editing `config/config.yaml` by hand, run the *Apply config changes* line. You can also turn on new features from
 the board: **Features** in the sidebar, and change settings there with **Edit settings** (the installer in edit

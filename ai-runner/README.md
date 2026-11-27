@@ -62,6 +62,9 @@ for plain-text output.
 
 ## Environment notes
 
+The board's **Knowns** (Needs action page, or `setup.py knowns`) go into every prompt as facts to treat as true, so
+short operator facts ("X is down on purpose") belong there rather than in `AGENT_NOTES`.
+
 Put durable knowledge about your network into `AGENT_NOTES` (a markdown file) or the agent's own memory/instructions in
 `AGENT_CWD`. Useful things to include:
 

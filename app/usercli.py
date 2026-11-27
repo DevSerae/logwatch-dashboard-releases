@@ -10,6 +10,9 @@
   mfa-reset NAME                           turn off MFA (lost phone); they set it up again at next sign-in
   signout NAME                             sign NAME out everywhere
   policy [--mfa-required on|off] [--url https://board.example.com]
+  knowns list | knowns add TEXT [--match M] | knowns edit ID TEXT [--match M] | knowns rm ID
+                                           facts the AI and briefs treat as true; --match moves the items it covers
+                                           (source, part of a key/title, or a glob) from Needs action to Expected
   sso list | sso on ID | sso off ID | sso remove ID
   sso add --kind google|microsoft|discord|github|oidc --client-id X [--id ID] [--label L] [--issuer URL|TENANT]
           [--auto-role admin|auditor] [--domains a.com,b.com] [--trust-email]   (client secret from stdin)
@@ -54,6 +57,39 @@ def cmd_list(con, a):
             f"{r['email'] or '-':<28}  last sign-in {when(r['last_login'])}{' via ' + r['last_via'] if r['last_via'] else ''}")
 
 
+def cmd_knowns(con, a):
+    if a.op == "list":
+        rows = db.knowns(con)
+        if not rows:
+            out("no knowns yet: knowns add \"Brimstone is down on purpose\" --match brimstone")
+        for k in rows:
+            out(f"{k['id']:>3}  {k['text']}" + (f"   [match: {k['match']}]" if k["match"] else ""))
+        return
+    if a.op in ("add", "edit"):
+        args = list(a.rest)
+        kid = None
+        if a.op == "edit":
+            if not args or not args[0].isdigit():
+                raise users.UserError("knowns edit ID TEXT [--match M]")
+            kid = int(args.pop(0))
+        text = " ".join(" ".join(args).split())[:500]
+        if not text:
+            raise users.UserError("no text")
+        match = " ".join((a.match or "").split())[:120]
+        if kid is None:
+            con.execute("INSERT INTO knowns(text, match, who, created) VALUES(?,?,?,?)", (text, match, "cli", time.time()))
+            out(f"added: {text}" + (f" [match: {match}]" if match else ""))
+        else:
+            if not con.execute("UPDATE knowns SET text=?, match=? WHERE id=?", (text, match, kid)).rowcount:
+                raise users.UserError(f"no known {kid}")
+            out(f"updated {kid}")
+        return
+    if a.op == "rm":
+        if not a.rest or not a.rest[0].isdigit() or not con.execute("DELETE FROM knowns WHERE id=?", (int(a.rest[0]),)).rowcount:
+            raise users.UserError("knowns rm ID (see knowns list)")
+        out(f"removed {a.rest[0]}")
+
+
 def cmd_sso(con, a):
     if a.op == "list":
         ps = sso.providers(con)
@@ -90,6 +126,8 @@ def run(con, a):
         return cmd_list(con, a)
     if c == "sso":
         return cmd_sso(con, a)
+    if c == "knowns":
+        return cmd_knowns(con, a)
     if c == "add":
         u = users.create(con, a.name, a.role, a.email or "", stdin_line("password") if a.password_stdin else "")
         return out(f"added {u['name']} ({u['role']})")
@@ -154,6 +192,10 @@ def main():
     x = s.add_parser("policy")
     x.add_argument("--mfa-required", choices=("on", "off"))
     x.add_argument("--url")
+    x = s.add_parser("knowns")
+    x.add_argument("op", choices=("list", "add", "edit", "rm"))
+    x.add_argument("rest", nargs="*")
+    x.add_argument("--match", default="")
     x = s.add_parser("sso")
     x.add_argument("op", choices=("list", "add", "on", "off", "remove"))
     x.add_argument("target", nargs="?")
@@ -171,8 +213,8 @@ def main():
             users.ensure(con)
             sso.ensure(con)
             run(con, a)
-            if a.cmd not in ("list",) and not (a.cmd == "sso" and a.op == "list"):
-                db.add_event(con, "auth", f"setup.py user {a.cmd}{' ' + a.op if a.cmd == 'sso' else ''}"
+            if a.cmd not in ("list",) and not (a.cmd in ("sso", "knowns") and a.op == "list"):
+                db.add_event(con, "auth", f"setup.py user {a.cmd}{' ' + a.op if a.cmd in ('sso', 'knowns') else ''}"
                              f"{' ' + a.name if getattr(a, 'name', None) else ''}", "from the command line")
     except (users.UserError, sso.SSOError) as e:
         sys.exit(f"error: {e}")

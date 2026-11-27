@@ -72,7 +72,7 @@ an undo line for everything it installs.
 
 **🧾 The board, always on.** One list of things that need a person, each with history, notes, snooze, mute and
 resolve. Also: an **Events** timeline, a **Hosts** view of log ingest per host, a **Logs** explorer on VictoriaLogs
-(any query can become an alert rule), maintenance windows that silence what they cover, GeoIP, and updates you approve. **Users** come as
+(any query can become an alert rule), maintenance windows that silence what they cover, knowns (facts you tell the board, e.g. "down on purpose", that the AI treats as true), GeoIP, and updates you approve. **Users** come as
 admins or view-only auditors, with MFA and sign-in through Google, Microsoft, Discord, GitHub or any OpenID Connect provider.
 
 Everything else is a **module**. The setup groups modules into **monitors**; pick only what you use. A module that's
@@ -323,6 +323,7 @@ default to `admin`, so set them to `auditor` if those visitors should only look.
 | Apply config changes | `sudo -u logwatch python3 setup.py render && sudo docker compose up -d --build && sudo docker compose restart board worker` |
 | The board's SSH public key | `sudo -u logwatch python3 setup.py pubkey` |
 | Env file for the AI runner | `sudo -u logwatch python3 setup.py runner-env --out runner.env --url https://logwatch.example.com` |
+| Knowns (facts the AI treats as true) | `sudo python3 setup.py knowns list` · `knowns add "Brimstone is down on purpose" --match brimstone` · `knowns rm ID` |
 
 After editing `config/config.yaml` by hand, run the *Apply config changes* line. You can also turn on new features from
 the board: **Settings → Install features**.

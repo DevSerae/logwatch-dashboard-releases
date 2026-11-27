@@ -67,7 +67,10 @@ Always on:
   health, and adds the ones you pick to the syslog, pull and trivy host lists. Live VM IPs need
   `VM.GuestAgent.Audit` (PVE 9) or `VM.Monitor` (PVE 8) on top of PVEAuditor.
 
-- **Board**: items, snooze/mute/resolve, to-dos, notes, history, maintenance windows, views, CSV export.
+- **Board**: items, snooze/mute/resolve, to-dos, notes, history, maintenance windows, knowns, views, CSV export.
+- **Knowns**: facts from the operator ("Brimstone is down on purpose", "no backups wanted"), on the Needs action page or
+  `setup.py knowns`. Every one goes into "Resolve with AI" runs and AI briefs as true. One with a *covers* match (a source,
+  part of an item key or title, or a glob such as `uptime:pip*`) moves the open items it covers from Needs action to Expected.
 - **VictoriaLogs and board disk checks**.
 - **GeoIP**: `board.geoip`.
   - `dbip`: DB-IP Lite. The worker downloads it monthly, no account needed. Attribution goes on the Edge tab, as
