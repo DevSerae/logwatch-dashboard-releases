@@ -818,6 +818,19 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
   .trow:hover:not(.head) { background:var(--panel2); } .trow > span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .trow .r { text-align:right; color:var(--dim); } .trow .r.warn { color:var(--warning); } .trow .r.bad { color:var(--error); }
   svg.tsp { display:block; width:100%; height:22px; overflow:visible; }
+  /* bandwidth */
+  .bwn { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px; }
+  .bwc { margin:0; padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+  .bwh { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; } .bwh .mono { font-weight:600; }
+  .bws { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; } .bws div { display:flex; flex-direction:column; gap:2px; }
+  .bws span { color:var(--mute); font-size:11px; display:flex; align-items:center; gap:5px; }
+  .sw { width:8px; height:8px; border-radius:2px; display:inline-block; } .sw.in { background:var(--s1); } .sw.out { background:var(--s2); }
+  .brow { display:grid; grid-template-columns:minmax(130px, 1.3fr) minmax(90px, 1.6fr) 72px 72px 72px 84px; gap:14px; align-items:center; padding:8px 16px; border-top:1px solid var(--line); font-size:12.5px; }
+  .brow.head { color:var(--mute); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; border-top:0; border-bottom:1px solid var(--line); }
+  .brow:hover:not(.head) { background:var(--panel2); } .brow > span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .brow .r { text-align:right; color:var(--dim); } .brow .r.warn { color:var(--warning); }
+  svg.bsp { display:block; width:100%; height:22px; overflow:visible; } svg.bsp.tall { height:44px; }
+  @media (max-width:640px) { .brow { grid-template-columns:minmax(110px, 1fr) 72px 72px; } .brow > :nth-child(2), .brow > :nth-child(5), .brow > :nth-child(6) { display:none; } }
 
   /* maintenance */
   .mrow { display:grid; grid-template-columns:10px 1fr auto; gap:12px; align-items:center; padding:10px 16px; border-top:1px solid var(--line); }
@@ -1941,7 +1954,7 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
 </div>
 </div>
 
-{% if mods.proxmox or mods.unifi or mods.action1 or mods.expiry %}<div class="panel{{ ' ftake' if feat.gates.infra.take }}" data-panel="infra" data-stabs="{{ 'proxmox:Proxmox,backups:Backups,disks:Disks,' if mods.proxmox }}{{ 'network:Network,' if mods.unifi }}{{ 'expiries:Expiries' if mods.expiry }}">{{ fsetup(feat.gates.infra.setup, feat.gates.infra.title, feat.gates.infra.take) }}
+{% if mods.proxmox or mods.unifi or mods.action1 or mods.expiry %}<div class="panel{{ ' ftake' if feat.gates.infra.take }}" data-panel="infra" data-stabs="{{ 'proxmox:Proxmox,backups:Backups,disks:Disks,' if mods.proxmox }}{{ 'bandwidth:Bandwidth,' if bw_on }}{{ 'network:Network,' if mods.unifi }}{{ 'expiries:Expiries' if mods.expiry }}">{{ fsetup(feat.gates.infra.setup, feat.gates.infra.title, feat.gates.infra.take) }}
 <div class="ptool"><div class="phd tb">{{ qbar("infra", "Filter: days:<60 updates:>50 reboot:yes", '[data-panel="infra"]') }}</div></div>
 {% set pve = infra.proxmox %}
 {% macro mini(pct, cls_warn=80, cls_bad=92, title="") -%}
@@ -2062,6 +2075,39 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
 <div class="meta" style="margin-top:8px">Full in = straight line through the last 7 days of hourly samples. — = still collecting.</div>
 </div>
 </div>
+{% endif %}
+
+{% if bw_on %}
+{# ---- bandwidth: network in/out per node and guest from Proxmox RRD ---- #}
+{% set bw = infra.bandwidth %}
+<div class="phd" data-stab="bandwidth"><h2>Bandwidth <span class="meta">{% if bw.at %}{{ bw.guests|length }} running guest{{ 's' if bw.guests|length != 1 }} · last 24 h · every 10 min · {{ bw.at|age }} ago{% else %}no data yet{% endif %}</span></h2><span class="spacer"></span><button type="button" class="btn aib" data-brief="bandwidth" data-brief-what="Network bandwidth: in/out per Proxmox node and guest over 24 hours and 30 days, the heaviest guests" title="A short AI summary of this section (what's shown, filters applied). Uses {{ ai_agent }}'s usage." aria-label="AI brief"><span>✦</span> AI brief</button></div>
+{% if bw.at %}
+<div class="bwn">{% for n in bw.nodes %}
+  <div class="card bwc" data-kind="Node" data-title="{{ n.name }}" data-sub="{{ n.in24|hsize }} in · {{ n.out24|hsize }} out in 24 h"
+       data-q='{{ {"node": n.name, "guest": n.name, "gb24": ((n.in24 + n.out24) / 1e9)|round(1)}|tojson }}'>
+    <div class="bwh"><span class="mono">{{ n.name }}</span><span class="meta">node · now {{ n.rate_in|brate }} in · {{ n.rate_out|brate }} out</span></div>
+    <svg class="bsp tall" data-pts='{{ n.pts|tojson }}' preserveAspectRatio="none"></svg>
+    <div class="bws"><div><b class="num">{{ n.in24|hsize }}</b><span><i class="sw in"></i>in 24 h</span></div><div><b class="num">{{ n.out24|hsize }}</b><span><i class="sw out"></i>out 24 h</span></div>
+      <div><b class="num">{{ ((n.in30 or 0) + (n.out30 or 0))|hsize if n.in30 is not none else "—" }}</b><span>in + out 30 d</span></div></div>
+  </div>{% endfor %}
+</div>
+<div class="card list" style="margin:12px 0 0">
+  <div class="brow head"><span>Guest</span><span>In / out, last 24 h</span><span class="r">In 24 h</span><span class="r">Out 24 h</span><span class="r">30 d</span><span class="r">Now</span></div>
+{% for g in bw.guests %}
+  {% set heavy = bw.limit and (g.in24 + g.out24) >= bw.limit * 2**30 %}
+  <div class="brow" data-kind="{{ g.type }}" data-title="{{ g.vmid }} {{ g.name }}" data-sub="{{ g.in24|hsize }} in · {{ g.out24|hsize }} out in 24 h"
+       data-q='{{ {"guest": g.name, "vmid": g.vmid, "node": g.node, "type": g.type|lower, "gb24": ((g.in24 + g.out24) / 1e9)|round(1)}|tojson }}'>
+    <span class="mono" title="{{ g.type }} {{ g.vmid }} on {{ g.node }}">{{ g.name }} <span class="dim">{{ g.type }} {{ g.vmid }}</span></span>
+    <svg class="bsp" data-pts='{{ g.pts|tojson }}' preserveAspectRatio="none"></svg>
+    <span class="r num {{ 'warn' if heavy }}">{{ g.in24|hsize }}</span>
+    <span class="r num {{ 'warn' if heavy }}">{{ g.out24|hsize }}</span>
+    <span class="r num">{{ ((g.in30 or 0) + (g.out30 or 0))|hsize if g.in30 is not none else "—" }}</span>
+    <span class="r num nw" title="{{ g.rate_in|brate }} in · {{ g.rate_out|brate }} out">{{ (g.rate_in + g.rate_out)|brate }}</span>
+  </div>
+{% else %}<div class="meta" style="padding:12px 16px">No running guests.</div>{% endfor %}
+</div>
+<div class="meta" style="margin-top:8px">From the RRD data Proxmox keeps for its own graphs: node traffic is the physical interfaces, guest traffic is seen from the guest (in = received). 30 d refreshes hourly.{% if bw.limit %} Guests over {{ bw.limit|round|int }} GiB in 24 h raise an item.{% endif %}</div>
+{% endif %}
 {% endif %}
 
 {% endif %}
@@ -2691,7 +2737,7 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
   }
 
   function draw() {
-    renderEdge(); renderEvents(); applyQueries(); balance(); minis();
+    renderEdge(); renderEvents(); applyQueries(); balance(); minis(); bwSparks();
     if (tab === "edge") { drawMap(); loadOffenders(); renderOffenders(); if ($("#wafbox")) wafTick(); }
     if (tab === "logs") drawLogs();
     const c = {s1: css("--s1"), s2: css("--s2"), s3: css("--s3"), s4: css("--s4")}, vis = s => s && s.clientWidth;
@@ -3034,6 +3080,25 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
       s.onmousemove = ev => { const r = s.getBoundingClientRect(), i = Math.min(p.length - 1, Math.max(0, Math.round((ev.clientX - r.left) / r.width * (p.length - 1))));
         if (p[i]) showTip(ev, new Date(p[i][0] * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"}),
                           [["used %", p[i][1] ?? "—", s1]]); };
+      s.onmouseleave = hideTip; });
+  }
+
+  // ---- bandwidth sparklines: in (area, s1) and out (line, s2) on one scale; B/s shown as bits/s in the tooltip ----
+  const brate = b => { const v = (b || 0) * 8; return v >= 1e9 ? (v / 1e9).toFixed(1) + " Gb/s" : v >= 1e6 ? (v / 1e6).toFixed(1) + " Mb/s" : v >= 1e3 ? Math.round(v / 1e3) + " kb/s" : Math.round(v) + " b/s"; };
+  function bwSparks() {
+    const s1 = css("--s1"), s2 = css("--s2");
+    $$("svg.bsp").forEach(s => { if (!s.clientWidth) return; const p = JSON.parse(s.dataset.pts || "[]"); if (p.length < 2) return;
+      s.innerHTML = "";
+      const w = s.clientWidth, h = s.clientHeight || 22, n = p.length, max = Math.max(1, ...p.map(x => Math.max(x[1] || 0, x[2] || 0)));
+      s.setAttribute("viewBox", `0 0 ${w} ${h}`);
+      const xy = k => p.map((x, i) => [i / (n - 1) * w, h - 1.5 - (x[k] || 0) / max * (h - 3)]);
+      const pin = xy(1), pout = xy(2), id = "bg" + (gid++); defsFade(s, id, s1, .25);
+      el("path", {d: linePath(pin) + ` L${w},${h} L0,${h} Z`, fill: `url(#${id})`}, s);
+      el("path", {d: linePath(pin), fill: "none", stroke: s1, "stroke-width": 1.5}, s);
+      el("path", {d: linePath(pout), fill: "none", stroke: s2, "stroke-width": 1.5}, s);
+      s.onmousemove = ev => { const r = s.getBoundingClientRect(), i = Math.min(n - 1, Math.max(0, Math.round((ev.clientX - r.left) / r.width * (n - 1))));
+        showTip(ev, new Date(p[i][0] * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"}),
+                [["in", p[i][1] == null ? "—" : brate(p[i][1]), s1], ["out", p[i][2] == null ? "—" : brate(p[i][2]), s2]], "30-minute average"); };
       s.onmouseleave = hideTip; });
   }
 

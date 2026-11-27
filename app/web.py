@@ -476,6 +476,8 @@ env.filters["gib"] = lambda b: f"{(b or 0) / 2**30:.0f}"
 env.filters["dtime"] = lambda ts: dt.datetime.fromtimestamp(ts).strftime("%b %d %H:%M") if ts else "?"
 env.filters["hsize"] = lambda b: next((f"{(b or 0) / 1000 ** i:.{0 if i < 3 else 1}f} {u}" for i, u in
                                         [(4, "TB"), (3, "GB"), (2, "MB"), (1, "kB"), (0, "B")] if (b or 0) >= 1000 ** i), "0 B")
+env.filters["brate"] = lambda b: next((f"{(b or 0) * 8 / 1000 ** i:.{0 if i < 2 else 1}f} {u}" for i, u in
+                                        [(3, "Gb/s"), (2, "Mb/s"), (1, "kb/s"), (0, "b/s")] if (b or 0) * 8 >= 1000 ** i), "0 b/s")
 env.filters["dur"] = lambda s: (f"{int(s // 86400)}d {int(s % 86400 // 3600)}h" if s >= 86400 else
                                 f"{int(s // 3600)}h {int(s % 3600 // 60)}m" if s >= 3600 else f"{int(s // 60)}m")
 env.filters["hm"] = lambda ts: dt.datetime.fromtimestamp(ts).strftime("%H:%M") if ts else "?"
@@ -554,7 +556,7 @@ def uptime_summary(con, now):
 
 TAB_OF = {"uptime": "up", "crowdsec": "edge", "traffic": "edge", "waf": "edge",
           "hosts": "hosts", "linux": "hosts", "windows": "hosts", "pull": "hosts", "wazuh": "hosts", "trivy": "hosts", "action1": "hosts",
-          "proxmox": "infra", "backups": "infra", "disks": "infra", "wan": "infra", "expiry": "infra", "unifi": "infra"}
+          "proxmox": "infra", "backups": "infra", "disks": "infra", "bandwidth": "infra", "wan": "infra", "expiry": "infra", "unifi": "infra"}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -599,7 +601,7 @@ def board(request: Request, show: str = ""):
                 runs = ai_runs(con, k, full=False)
                 if runs:
                     ai[k] = runs
-        infra = {k: db.kv_get(con, k) or {} for k in ("proxmox", "wan", "action1", "wazuh", "backups", "disks")}
+        infra = {k: db.kv_get(con, k) or {} for k in ("proxmox", "wan", "action1", "wazuh", "backups", "disks", "bandwidth")}
         up = uptime_summary(con, now)
         maint_now = db.active_maint(con, now)
         maint = [dict(r) for r in con.execute("SELECT * FROM maint WHERE end > ? ORDER BY start", (now,))]
@@ -651,7 +653,7 @@ def board(request: Request, show: str = ""):
                       todos=sum(1 for i in items if i["kind"] == "todo"), hosts_missing=hosts_missing,
                       clean_view=BOARD.get("clean_view") or [], edge_nodes=CSCTL_HOSTS, targets=targets, up_stats=up_stats, tls_targets=tls_t, maint=maint, maint_now=maint_now,
                       in_maint=in_maint, instatus=bool(INSTATUS and secret("INSTATUS_API_KEY")), ai=ai, viewer_ip=viewer_ip(request),
-                      mods=MODS, title=TITLE, host_label=HOST_LABEL, user=request.state.user, role=request.state.role, ai_agent=AI_AGENT,
+                      mods=MODS, bw_on=BW_ON, title=TITLE, host_label=HOST_LABEL, user=request.state.user, role=request.state.role, ai_agent=AI_AGENT,
                       log_rules=bool(C.CONFIG.get("log_rules")), geoip=geo_provider(),
                       up_bad=sum(1 for t in targets if t.get("last") and not t["last"]["ok"]), chart_data={"days": days, "volume": volume.get("hours") and {
                           "t0": volume["hours"][0], "step": 3600, "n": len(volume["hours"]), "kinds": volume["kinds"],
@@ -923,6 +925,7 @@ WORLD = Path(__file__).with_name("static") / "world.json"
 INSTATUS = mod("instatus") or {}
 INSTATUS_TEXT = INSTATUS.get("public_text") or "We're carrying out scheduled maintenance."  # public: keep it vague
 MODS = {m: bool(mod(m)) for m in MODULES}
+BW_ON = MODS.get("proxmox", False) and (mod("proxmox") or {}).get("bandwidth", True) is not False
 
 
 def token_re():

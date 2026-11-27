@@ -827,6 +827,90 @@ def disks(con, start, end):
                              "pools": [d for d in out if d.get("kind") == "zfs"], "trend": trend})
 
 
+def _rrd_net(rows, now, span):
+    """Bytes in/out over the last `span` seconds from Proxmox RRD rows (netin/netout are bytes/s averages).
+    The step comes from the rows themselves: PVE 9 keeps 1-minute points for a day, PVE 8 30-minute ones."""
+    rows = [r for r in rows or [] if r.get("time")]
+    tin = tout = 0.0
+    for a, b in zip(rows, rows[1:]):
+        step = b["time"] - a["time"]
+        if b["time"] <= now - span or step <= 0:
+            continue
+        tin += (b.get("netin") or 0) * step
+        tout += (b.get("netout") or 0) * step
+    return tin, tout
+
+
+def _rrd_spark(rows, now, buckets=48, span=86400):
+    """[[t, in B/s, out B/s], …] averaged into `buckets` slots over `span` (the sparkline on the Bandwidth tab)."""
+    w = span / buckets
+    acc = [[0.0, 0.0, 0] for _ in range(buckets)]
+    for r in rows or []:
+        t = r.get("time") or 0
+        i = int((t - (now - span)) // w)
+        if 0 <= i < buckets and (r.get("netin") is not None or r.get("netout") is not None):
+            acc[i][0] += r.get("netin") or 0
+            acc[i][1] += r.get("netout") or 0
+            acc[i][2] += 1
+    return [[round(now - span + (i + 1) * w), round(a[0] / a[2]) if a[2] else None, round(a[1] / a[2]) if a[2] else None]
+            for i, a in enumerate(acc)]
+
+
+def _rrd_now(rows):
+    """Latest in/out rate (B/s) from the RRD rows."""
+    for r in reversed(rows or []):
+        if r.get("netin") is not None or r.get("netout") is not None:
+            return r.get("netin") or 0, r.get("netout") or 0
+    return 0, 0
+
+
+def bandwidth(con, start, end):
+    """Network in/out per Proxmox node and running guest from the RRD data Proxmox already keeps (PVEAuditor is
+    enough, nothing to install). 24 h figures every run, 30-day totals hourly. Optional item when a guest moves more
+    than proxmox.bandwidth_warn_gib_day in 24 h."""
+    if not PVE or not PVE.get("bandwidth", True):
+        return
+    pv = db.kv_get(con, "proxmox") or {}
+    now = time.time()
+    prev = db.kv_get(con, "bandwidth") or {}
+    month_due = now - prev.get("month_at", 0) > 3300
+    old = {r["key"]: r for r in (prev.get("nodes") or []) + (prev.get("guests") or [])}
+    limit = float(PVE.get("bandwidth_warn_gib_day") or 0)
+
+    def entry(key, path, **meta):
+        day = pve_get(f"{path}/rrddata?timeframe=day&cf=AVERAGE")
+        tin, tout = _rrd_net(day, now, 86400)
+        rin, rout = _rrd_now(day)
+        e = dict(meta, key=key, in24=round(tin), out24=round(tout), rate_in=round(rin), rate_out=round(rout),
+                 pts=_rrd_spark(day, now))
+        if month_due:
+            m_in, m_out = _rrd_net(pve_get(f"{path}/rrddata?timeframe=month&cf=AVERAGE"), now, 30 * 86400)
+            e["in30"], e["out30"] = round(m_in), round(m_out)
+        else:
+            e["in30"], e["out30"] = old.get(key, {}).get("in30"), old.get(key, {}).get("out30")
+        return e
+
+    nodes, guests, active = [], [], set()
+    for n in [x for x in pv.get("nodes") or [] if x["online"]]:
+        nodes.append(entry(f"node:{n['name']}", f"/nodes/{n['name']}", name=n["name"]))
+    for g in [x for x in pv.get("guests") or [] if x["running"] and x.get("node")]:
+        kind = "qemu" if g["type"] == "VM" else "lxc"
+        e = entry(f"{kind}:{g['vmid']}", f"/nodes/{g['node']}/{kind}/{g['vmid']}", name=g["name"], vmid=g["vmid"],
+                  type=g["type"], node=g["node"])
+        guests.append(e)
+        tot = (e["in24"] + e["out24"]) / 2**30
+        if limit and tot >= limit:
+            key = f"bandwidth:{kind}:{g['vmid']}"
+            active.add(key)
+            db.upsert_item(con, key, "bandwidth", f"{g['type']} {g['vmid']} {g['name']} moved {tot:.0f} GiB in 24 h",
+                           f"{e['in24'] / 2**30:.1f} GiB in, {e['out24'] / 2**30:.1f} GiB out over the last 24 h "
+                           f"(limit {limit:g} GiB/day, proxmox.bandwidth_warn_gib_day).", "warning", kind="condition")
+    db.clear_conditions(con, "bandwidth", active)
+    guests.sort(key=lambda e: -(e["in24"] + e["out24"]))
+    db.kv_set(con, "bandwidth", {"at": now, "month_at": now if month_due else prev.get("month_at", 0),
+                                 "nodes": sorted(nodes, key=lambda e: e["name"]), "guests": guests, "limit": limit})
+
+
 def wan(con, start, end):
     """UniFi gateway health (WAN, latency, clients) + IPS hits in 24h from the stored flows."""
     if not UNIFI or not UNIFI.get("wan", True):
@@ -1109,9 +1193,9 @@ def todos(con, start, end):
 
 
 ALL = [pull, hosts, volume, linux, log_rules, unifi, windows, tls_expiry, local_disk, trivy, top_domains, crowdsec,
-       proxmox, backups, disks, wan, action1, wazuh, alertfile, todos]
+       proxmox, backups, disks, bandwidth, wan, action1, wazuh, alertfile, todos]
 NEEDS = {pull: "pull", unifi: "unifi", windows: "windows", tls_expiry: "expiry", trivy: "trivy", crowdsec: "crowdsec",
-         proxmox: "proxmox", backups: "proxmox", disks: "proxmox", wan: "unifi", action1: "action1", wazuh: "wazuh",
+         proxmox: "proxmox", backups: "proxmox", disks: "proxmox", bandwidth: "proxmox", wan: "unifi", action1: "action1", wazuh: "wazuh",
          alertfile: "alertfile"}
 COLLECTORS = [c for c in ALL if c not in NEEDS or mod(NEEDS[c])]
 if not (mod("windows") or {}).get("dns", {}).get("enabled"):

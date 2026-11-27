@@ -90,6 +90,8 @@ proxmox:                          # nodes, guests, storage, backups, SMART/ZFS (
   backups: true
   backup_stale_hours: 48
   disks: true
+  bandwidth: true                 # network in/out per node and guest from Proxmox's own RRD data (Infra → Bandwidth)
+  bandwidth_warn_gib_day: 0       # item when a guest moves more than this many GiB in 24 h (0 = off)
   no_logs_expected: []            # running guests that never send logs on purpose
 
 trivy:                            # weekly HIGH/CRITICAL scan of running container images (role images on hosts)
