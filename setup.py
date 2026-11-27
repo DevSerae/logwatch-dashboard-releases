@@ -116,6 +116,20 @@ def value(text, name, key, default=None):
     return v if v else default
 
 
+PW_DEFAULT, PW_FLOOR, PW_CEIL = 12, 4, 128   # same as app/settings.py
+
+
+def min_password_length(raw=None):
+    """board.min_password_length (from config.yaml when raw is None): 12 if unset or not a number, kept within 4..128."""
+    if raw is None:
+        raw = value(CONFIG.read_text(), "board", "min_password_length") if CONFIG.exists() else None
+    try:
+        n = int(raw) if raw not in (None, "") else PW_DEFAULT
+    except (TypeError, ValueError):
+        n = PW_DEFAULT
+    return max(PW_FLOOR, min(PW_CEIL, n))
+
+
 def flags(text):
     return {m: (value(text, m, "enabled", "false").lower() == "true") for m in MODULES}
 
@@ -183,8 +197,9 @@ def new_password(prompt, stdin):
         pw = getpass.getpass(prompt)
         if pw != getpass.getpass("Again: "):
             die("passwords don't match")
-    if len(pw) < 12:
-        die("use at least 12 characters")
+    n = min_password_length()
+    if len(pw) < n:
+        die(f"use at least {n} characters")
     return pw
 
 
@@ -315,6 +330,14 @@ def cmd_check(a):
             warns.append("module uptime: no uptime.targets seed (add checks on the Services tab instead)")
         if on["ai"] and not ((cfg.get("board") or {}).get("cookie_secure", True)):
             warns.append("ai runner talks to the board over HTTP: put the board behind HTTPS before using it across networks")
+        raw = (cfg.get("board") or {}).get("min_password_length")
+        if raw is not None and not (isinstance(raw, int) and PW_FLOOR <= raw <= PW_CEIL):
+            warns.append(f"board.min_password_length {raw!r} isn't a whole number from {PW_FLOOR} to {PW_CEIL}: "
+                         f"the board uses {min_password_length(raw)}")
+        if min_password_length(raw) < PW_DEFAULT and (not (cfg.get("board") or {}).get("allow_cidrs")
+                                                      or (cfg.get("board") or {}).get("proxy_public")):
+            warns.append(f"board.min_password_length is below {PW_DEFAULT} while the login page is reachable from "
+                         "anywhere (empty allow_cidrs or proxy_public): use 12+ or limit allow_cidrs")
         if not (cfg.get("board") or {}).get("allow_cidrs"):
             warns.append("board.allow_cidrs is empty: the login page is reachable by anyone who can reach the port")
     if (on["pull"] or on["traffic"] or on["trivy"] or on["crowdsec"] or on["waf"]) and not SSH_KEY.exists():

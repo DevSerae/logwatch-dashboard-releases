@@ -66,6 +66,19 @@ BOARD = section("board")
 VL = (section("victorialogs").get("url") or "http://victorialogs:9428").rstrip("/")
 TITLE = BOARD.get("title") or "Logwatch Dashboard"
 HOST_LABEL = BOARD.get("host_label") or ""
+PW_DEFAULT, PW_FLOOR, PW_CEIL = 12, 4, 128
+
+
+def pw_min_length(raw):
+    """board.min_password_length: PW_DEFAULT when unset or not a number, else kept within PW_FLOOR..PW_CEIL."""
+    try:
+        n = int(raw) if raw not in (None, "") else PW_DEFAULT
+    except (TypeError, ValueError):
+        n = PW_DEFAULT
+    return max(PW_FLOOR, min(PW_CEIL, n))
+
+
+MIN_PASSWORD = pw_min_length(BOARD.get("min_password_length"))
 
 
 def nets(key, src=None):

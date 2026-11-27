@@ -14,12 +14,12 @@ import struct
 import time
 
 import db
-from settings import secret
+from settings import MIN_PASSWORD, secret
 
 ROLES = ("admin", "auditor")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}")
 EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
-MIN_PW = 12
+MIN_PW = MIN_PASSWORD  # board.min_password_length in config.yaml
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (

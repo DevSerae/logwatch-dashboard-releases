@@ -15,7 +15,7 @@
     <form method="post" action="/users"><input type="hidden" name="op" value="email"><input type="hidden" name="name" value="{{ x.name }}">
       <input name="email" type="email" value="{{ x.email }}" placeholder="e-mail for SSO"><button class="g sm">Save e-mail</button></form>
     <form method="post" action="/users"><input type="hidden" name="op" value="password"><input type="hidden" name="name" value="{{ x.name }}">
-      <input name="password" type="password" minlength="12" placeholder="new password" autocomplete="new-password" required><button class="g sm">Set password</button></form>
+      <input name="password" type="password" minlength="{{ min_pw }}" placeholder="new password" autocomplete="new-password" required><button class="g sm">Set password</button></form>
     <form method="post" action="/users">
       <input type="hidden" name="name" value="{{ x.name }}">
       {% if x.totp_on %}<button class="g sm" name="op" value="mfa_reset">Reset MFA</button>{% endif %}
@@ -29,7 +29,7 @@
 <div class="grid"><div><label>Username</label><input class="w100" name="name" required></div>
   <div><label>Role</label><select class="w100" name="role">{% for r in roles %}<option {{ 'selected' if r == 'auditor' }}>{{ r }}</option>{% endfor %}</select></div>
   <div><label>E-mail (SSO sign-in)</label><input class="w100" name="email" type="email"></div>
-  <div><label>Password (12+, blank = SSO only)</label><input class="w100" name="password" type="password" minlength="12" autocomplete="new-password"></div></div>
+  <div><label>Password ({{ min_pw }}+, blank = SSO only)</label><input class="w100" name="password" type="password" minlength="{{ min_pw }}" autocomplete="new-password"></div></div>
 <button>Add user</button></form>
 </section>
 

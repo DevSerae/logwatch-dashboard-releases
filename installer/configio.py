@@ -199,9 +199,13 @@ def validate(state):
 
     for f in BOARD_FIELDS:
         need("board", f)
+    mpl = str(v.get("board.min_password_length", setup.PW_DEFAULT)).strip()
+    if not (mpl.isdigit() and setup.PW_FLOOR <= int(mpl) <= setup.PW_CEIL):
+        probs.setdefault("board", []).append(f"Minimum password length: a number from {setup.PW_FLOOR} to {setup.PW_CEIL}")
     if v.get("admin_pw") or "BOARD_ADMIN_PASSWORD_HASH" not in stored:
-        if len(v.get("admin_pw") or "") < 12:
-            probs.setdefault("board", []).append("Admin password: 12+ characters")
+        n = setup.min_password_length(v.get("board.min_password_length"))
+        if len(v.get("admin_pw") or "") < n:
+            probs.setdefault("board", []).append(f"Admin password: {n}+ characters")
         elif v.get("admin_pw") != v.get("admin_pw2"):
             probs.setdefault("board", []).append("Admin passwords don't match")
     for c in csv(v.get("board.allow_cidrs")) + csv(v.get("board.trusted_proxies")) + csv(v.get("board.open_cidrs")):
