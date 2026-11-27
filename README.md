@@ -278,7 +278,7 @@ when you're locked out.
 | Sign everyone out | `sudo -u logwatch python3 setup.py secret SESSION_SECRET --generate`, then `sudo docker compose restart board` |
 | All options | `sudo -u logwatch python3 setup.py user --help` |
 
-Passwords need at least 12 characters, and the commands read them from a prompt or from stdin, never from arguments.
+Passwords need at least 12 characters (`board.min_password_length` in `config/config.yaml`, 4 to 128), and the commands read them from a prompt or from stdin, never from arguments.
 For scripts, use `printf '%s\n' "$PW" | sudo -u logwatch python3 setup.py user passwd alice --stdin`. The board won't
 demote, disable or delete the last admin.
 
@@ -307,7 +307,7 @@ From the VM: `printf '%s\n' "$SECRET" | sudo -u logwatch python3 setup.py user s
 plus `sso list`, `sso off ID` and `sso remove ID`.
 
 Who can reach the login is set in `config/config.yaml` under `board:`: `allow_cidrs` (only these networks),
-`open_cidrs` (these skip the login and get `open_role`), `session_hours`, and `cf_access` for Cloudflare Access. An
+`open_cidrs` (these skip the login and get `open_role`), `session_hours`, `min_password_length`, and `cf_access` for Cloudflare Access. An
 Access user whose e-mail matches a board user gets that user's role; anyone else gets `cf_access.role`. Both roles
 default to `admin`, so set them to `auditor` if those visitors should only look.
 

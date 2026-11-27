@@ -204,8 +204,10 @@ BOARD_FIELDS = [
     F("updates.check", "Check for new releases", "bool", True, "The board asks before installing anything."),
     F("updates.auto", "Install new releases automatically", "bool", False, "At the time below, with backup + rollback. Can be changed on the board."),
     F("updates.auto_at", "Automatic update time (HH:MM, this VM's time zone)", "text", "03:00"),
+    F("board.min_password_length", "Minimum password length", "int", 12,
+      "For every board user, 4 to 128. Below 12 only if the board isn't reachable from the internet."),
     F("admin_user", "Admin user", "text", "admin", required=True),
-    F("admin_pw", "Admin password (12+ characters)", "secret"),
+    F("admin_pw", "Admin password (at least the minimum length above)", "secret"),
     F("admin_pw2", "Admin password again", "secret"),
 ]
 

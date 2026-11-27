@@ -37,8 +37,8 @@
   {% if not u.pw_hash %}<p class="d">You sign in with SSO. A password adds username + password sign-in as well.</p>{% endif %}
   <form method="post" action="/account"><input type="hidden" name="op" value="password">
   <div class="grid">{% if u.pw_hash %}<div><label>Current password</label><input class="w100" type="password" name="current" autocomplete="current-password" required></div>{% endif %}
-  <div><label>New password (12+ characters)</label><input class="w100" type="password" name="new" minlength="12" autocomplete="new-password" required></div>
-  <div><label>New password again</label><input class="w100" type="password" name="new2" minlength="12" autocomplete="new-password" required></div></div>
+  <div><label>New password ({{ min_pw }}+ characters)</label><input class="w100" type="password" name="new" minlength="{{ min_pw }}" autocomplete="new-password" required></div>
+  <div><label>New password again</label><input class="w100" type="password" name="new2" minlength="{{ min_pw }}" autocomplete="new-password" required></div></div>
   <button>Save password</button></form>
 </section>
 

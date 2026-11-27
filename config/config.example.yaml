@@ -9,6 +9,7 @@ board:
   title: Logwatch Dashboard
   host_label: ""                  # shown in the top bar, e.g. "logwatch-1"
   session_hours: 12
+  min_password_length: 12         # for every board user (4-128); lower it only if the board isn't reachable from the internet
   cookie_secure: true             # false only if you open the board over plain http (LAN, no reverse proxy)
   allow_cidrs: []                 # empty = anyone who can reach the port may see the login page; e.g. [192.0.2.0/24]
   #                                 curl from the Docker host or a same-host proxy arrives from the Docker gateway

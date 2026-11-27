@@ -50,6 +50,7 @@ TOKEN_PATHS = ("/api/runner/", "/api/ingest")
 
 env = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"), autoescape=select_autoescape())
 env.globals["board_version"] = updates.current
+env.globals["min_pw"] = users.MIN_PW
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 with db.connect() as _con:
     users.ensure(_con)
