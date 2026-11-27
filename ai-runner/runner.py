@@ -338,7 +338,7 @@ class AgentError(Exception):
     pass
 
 
-VERSION = "2.9.1"
+VERSION = "2.10.0"
 READY = {"agent": "", "ready": True, "why": "", "version": VERSION, "at": 0.0}
 
 
