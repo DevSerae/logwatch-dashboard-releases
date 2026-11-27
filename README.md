@@ -72,7 +72,7 @@ an undo line for everything it installs.
 
 **🧾 The board, always on.** One list of things that need a person, each with history, notes, snooze, mute and
 resolve. Also: an **Events** timeline, a **Hosts** view of log ingest per host, a **Logs** explorer on VictoriaLogs
-(any query can become an alert rule), maintenance windows that silence what they cover, GeoIP, and updates you approve. **Users** come as
+(any query can become an alert rule), maintenance windows that silence what they cover, knowns (facts you tell the board, e.g. "down on purpose", that the AI treats as true), GeoIP, and updates you approve. **Users** come as
 admins or view-only auditors, with MFA and sign-in through Google, Microsoft, Discord, GitHub or any OpenID Connect provider.
 
 Everything else is a **module**. The setup groups modules into **monitors**; pick only what you use. A module that's
@@ -97,7 +97,7 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 | Module | Turn it on and you get |
 |---|---|
 | **CrowdSec** | A health card per edge host (engine, LAPI, AppSec, bouncer), bans and WAF blocks, repeat offenders, Ban/Unban from the board |
-| **Request / connection log** | Every HTTP request (Nginx Proxy Manager / nginx) and every new connection (nftables) through your edge, on a world map with filters |
+| **Request / connection log** | Every HTTP request (Nginx Proxy Manager / nginx) and every new connection (nftables) through your edge, on an animated world map (flat, Equal Earth, Natural Earth, Mercator or a globe you can spin) with filters |
 | **Edge WAF** | Custom layer-7 rules from a rule builder, IP/CIDR bans with expiry, country/ASN rules, OWASP CRS level, **port proxies** for raw TCP/UDP services, named port/IP **lists** you can reuse in rules, and optional rule suggestions, auto-escalation, honeypot traps and bad-bot UA blocking (all off until you turn them on). Every change starts log-only, can be simulated against the last 24 h of traffic, and can be undone. Optional push to Cloudflare |
 
 <p align="center">
@@ -138,7 +138,7 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 
 | Module | Turn it on and you get |
 |---|---|
-| **Proxmox VE** | Nodes, guests, storage, backup freshness per guest, SMART and ZFS health, guests that never sent logs. In the setup, **Discover** fills every host list from your cluster |
+| **Proxmox VE** | Nodes, guests, storage, backup freshness per guest, SMART and ZFS health, bandwidth per node and guest, guests that never sent logs. In the setup, **Discover** fills every host list from your cluster |
 
 <p align="center">
   <img src="assets/board-infra.png" alt="Infra: Proxmox nodes, backups, disks, ZFS, WAN and expiry dates" width="88%">
@@ -149,7 +149,7 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 | Module | Turn it on and you get |
 |---|---|
 | **Instatus** | Board maintenance windows also post and resolve maintenance on your Instatus page |
-| **Resolve with AI** | Your agent CLI (Claude Code, Codex, Gemini, OpenCode) works an incident while you watch the live transcript on the board |
+| **Resolve with AI** | Your agent CLI (Claude Code, Codex, Gemini, OpenCode) works an incident while you watch the live transcript on the board; it asks on the board (Approve / Deny) before risky changes |
 
 ## 📸 Screenshots
 
@@ -278,7 +278,7 @@ when you're locked out.
 | Sign everyone out | `sudo -u logwatch python3 setup.py secret SESSION_SECRET --generate`, then `sudo docker compose restart board` |
 | All options | `sudo -u logwatch python3 setup.py user --help` |
 
-Passwords need at least 12 characters, and the commands read them from a prompt or from stdin, never from arguments.
+Passwords need at least 12 characters (`board.min_password_length` in `config/config.yaml`, 4 to 128), and the commands read them from a prompt or from stdin, never from arguments.
 For scripts, use `printf '%s\n' "$PW" | sudo -u logwatch python3 setup.py user passwd alice --stdin`. The board won't
 demote, disable or delete the last admin.
 
@@ -307,7 +307,7 @@ From the VM: `printf '%s\n' "$SECRET" | sudo -u logwatch python3 setup.py user s
 plus `sso list`, `sso off ID` and `sso remove ID`.
 
 Who can reach the login is set in `config/config.yaml` under `board:`: `allow_cidrs` (only these networks),
-`open_cidrs` (these skip the login and get `open_role`), `session_hours`, and `cf_access` for Cloudflare Access. An
+`open_cidrs` (these skip the login and get `open_role`), `session_hours`, `min_password_length`, and `cf_access` for Cloudflare Access. An
 Access user whose e-mail matches a board user gets that user's role; anyone else gets `cf_access.role`. Both roles
 default to `admin`, so set them to `auditor` if those visitors should only look.
 
@@ -323,6 +323,7 @@ default to `admin`, so set them to `auditor` if those visitors should only look.
 | Apply config changes | `sudo -u logwatch python3 setup.py render && sudo docker compose up -d --build && sudo docker compose restart board worker` |
 | The board's SSH public key | `sudo -u logwatch python3 setup.py pubkey` |
 | Env file for the AI runner | `sudo -u logwatch python3 setup.py runner-env --out runner.env --url https://logwatch.example.com` |
+| Knowns (facts the AI treats as true) | `sudo python3 setup.py knowns list` · `knowns add "Brimstone is down on purpose" --match brimstone` · `knowns rm ID` |
 
 After editing `config/config.yaml` by hand, run the *Apply config changes* line. You can also turn on new features from
 the board: **Settings → Install features**.
