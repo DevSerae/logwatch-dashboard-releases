@@ -1,0 +1,13 @@
+/secrets/
+/data/
+/config/config.yaml
+/.env
+/docker-compose.override.yml
+__pycache__/
+.git
+ai-runner/
+remote/
+!remote/linux/logwatch-wafctl
+!remote/linux/logwatch-nfwafctl
+docs/
+*.zip

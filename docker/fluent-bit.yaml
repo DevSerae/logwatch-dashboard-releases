@@ -1,0 +1,50 @@
+# Logwatch Dashboard collector: Windows agents (forward, tags win/dns) and goflow2 NetFlow (docker fluentd driver,
+# tag netflow) → VictoriaLogs.
+service:
+  flush: 5
+  log_level: warn
+  storage.path: /var/lib/fluent-bit
+
+parsers:
+  - name: lw_json
+    format: json
+
+pipeline:
+  inputs:
+    - name: forward
+      listen: 0.0.0.0
+      port: 24224
+      storage.type: filesystem
+  filters:
+    - name: parser
+      match: netflow
+      key_name: log
+      parser: lw_json
+    - name: modify
+      match: netflow
+      rename: type flow_type
+      add: type netflow
+  outputs:
+    - name: http
+      match: netflow
+      host: victorialogs
+      port: 9428
+      uri: /insert/jsonline?_stream_fields=type,sampler_address&_msg_field=flow_type&_time_field=time_received_ns
+      format: json_lines
+      json_date_key: false
+    - name: http
+      match: win
+      host: victorialogs
+      port: 9428
+      uri: /insert/jsonline?_stream_fields=type,hostname,Channel&_msg_field=Message&_time_field=date
+      format: json_lines
+      json_date_key: date
+      json_date_format: iso8601
+    - name: http
+      match: dns
+      host: victorialogs
+      port: 9428
+      uri: /insert/jsonline?_stream_fields=type,hostname&_msg_field=qname&_time_field=date
+      format: json_lines
+      json_date_key: date
+      json_date_format: iso8601

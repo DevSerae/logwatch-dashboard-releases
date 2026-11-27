@@ -1,0 +1,865 @@
+#!/usr/bin/env python3
+"""Forced command for the Logwatch board (role l4waf of logwatch-remote) on a port proxy: /usr/local/sbin/logwatch-nfwafctl.
+
+The proxy forwards raw TCP/UDP traffic (DNAT: app servers, SFTP, anything not HTTP). This is the L2-L4 layer, plus fixed
+payload bytes (L7 signatures of non-HTTP protocols, e.g. UDP query floods).
+SSH_ORIGINAL_COMMAND: "apply" (desired state as JSON on stdin) | "confirm <gen>" | "status" | "hits [hours]" | "rollback"
+| "check" | "render" | "list" | "clear <list> [ip]". The board never sends nft text: every field is checked here and the
+ruleset is rendered locally.
+
+Managed state (nothing else is touched): the nft tables "inet lw_waf" and "netdev lw_waf_in" and their file
+/etc/logwatch-waf/lw-waf.nft (loaded at boot by logwatch-nft.service). Two stages:
+  early   netdev ingress on the public interface, before conntrack and defragmentation: stateless packet checks
+          (fragments, bad TCP flags, tiny MSS, TTL, size, bogon sources, MAC/VLAN). Early rules must name ports, and a port
+          this host itself listens on (sshd, WireGuard, ...) is refused, so management can't be cut.
+  conn    forward hook, only traffic that was port-forwarded (ct status dnat) and arrived on the public interface: bans,
+          sources (IPs / countries / networks), connection state, rate / bandwidth / concurrent-connection limits per IP or
+          per /24 (/64), fixed payload bytes, reverse-path (spoofed source) check, allow-list exceptions, OS fingerprint
+          (osf, needs the pf.os database loaded), "add the source to a dynamic list" (auto-ban).
+  pre     prerouting, after conntrack and before DNAT, on the public interface: invalid conntrack state. Like early rules
+          these must name ports nobody on this host listens on.
+Dynamic lists (v3) are timeout sets filled by rules and by the port-scan trap (new connections to closed ports: neither
+forwarded nor used by this host); an enforced list drops its members on forwarded traffic only, never on this host's own
+ports. Their members survive an apply and a rollback.
+Each apply checks the file with `nft -c`, loads it atomically, keeps the previous generations for rollback, and arms a
+dead-man timer: unless the board confirms over a fresh SSH connection within CONFIRM_SECS, the previous ruleset comes back.
+Payload v1 ({"l4": [rate|geo rules]}, boards before 2.8.0) is still accepted.
+"""
+import fcntl
+import ipaddress
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+VERSION = 3
+DIR = os.environ.get("LWNF_DIR", "/etc/logwatch-waf")
+FILE = os.path.join(DIR, "lw-waf.nft")
+STATE = os.environ.get("LWNF_STATE", "/var/lib/logwatch-nfwafctl")
+PENDING = os.path.join(STATE, "pending.json")
+NFT = os.environ.get("LWNF_NFT", "nft").split()
+WAN = os.environ.get("LWNF_WAN", "eth0")
+SELF = os.path.abspath(__file__)
+TABLE, ETABLE = "lw_waf", "lw_waf_in"
+CONFIRM_SECS = int(os.environ.get("LWNF_CONFIRM", "120"))
+KEEP = 10
+MAX_PAYLOAD = 16 * 1024 * 1024
+MAX_RULES = 200
+MAX_BANS = 5000
+MAX_CIDRS = 600000
+LOG_RATE = "5/second"
+OSF_MARK = "/run/logwatch-osf.loaded"                 # written by logwatch-osf.service once pf.os is in the kernel
+IFACE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
+MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+BOGON4 = ["0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24",
+          "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/3"]
+BOGON6 = ["::/8", "100::/64", "2001:db8::/32", "fc00::/7", "fe80::/10", "fec0::/10", "ff00::/8"]
+BAD_FLAGS = "0x0, fin|syn, syn|rst, fin|rst, fin|psh|urg, fin|syn|rst|psh|ack|urg"
+EARLY_KEYS = ("frag", "tcp_bad", "mss", "ttl", "len", "bogon", "mac", "vlan", "flags", "icmp")
+CONN_KEYS = ("limit", "payload", "spoof", "nosyn", "dst", "state", "osf", "dyn", "ban")
+PRE_KEYS = ("invalid",)
+ANY_KEYS = ("hours", "days", "dscp")              # fine at every stage
+TCP_FLAGS = ("fin", "syn", "rst", "psh", "ack", "urg", "ecn", "cwr")
+ICMP4 = ("echo-request", "echo-reply", "destination-unreachable", "time-exceeded", "parameter-problem", "timestamp-request",
+         "redirect", "router-advertisement", "router-solicitation", "address-mask-request", "info-request")
+ICMP6 = {"echo-request": "echo-request", "echo-reply": "echo-reply", "destination-unreachable": "destination-unreachable",
+         "time-exceeded": "time-exceeded", "parameter-problem": "parameter-problem", "packet-too-big": "packet-too-big",
+         "router-advertisement": "nd-router-advert", "router-solicitation": "nd-router-solicit", "redirect": "nd-redirect"}
+DAYS = {"mon": "Monday", "tue": "Tuesday", "wed": "Wednesday", "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"}
+OSF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}$")
+MAX_DYN = 16
+DYN_SIZE = 65535
+
+
+class Bad(Exception):
+    pass
+
+
+def out(d, code=0):
+    print(json.dumps(d))
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- validation
+
+def ports(v, what="port"):
+    """'21000-21999, 8401' → ['21000-21999', '8401'] (checked); '' → []."""
+    res = []
+    for p in str(v or "").replace(" ", "").split(","):
+        if not p:
+            continue
+        m = re.fullmatch(r"(\d{1,5})(?:-(\d{1,5}))?", p)
+        if not m:
+            raise Bad(f"bad {what} '{p[:20]}'")
+        a, b = int(m[1]), int(m[2] or m[1])
+        if not (1 <= a <= b <= 65535):
+            raise Bad(f"bad {what} range '{p[:20]}'")
+        res.append(f"{a}-{b}" if b != a else str(a))
+    if len(res) > 32:
+        raise Bad(f"up to 32 {what}s or ranges")
+    return res
+
+
+def rng(v, lo, hi, what):
+    """'1-5' or '64' → (a, b) within lo..hi; '' → None."""
+    if v in (None, ""):
+        return None
+    m = re.fullmatch(r"(\d{1,5})(?:-(\d{1,5}))?", str(v).replace(" ", ""))
+    if not m:
+        raise Bad(f"{what}: a number or a range like 1-5")
+    a, b = int(m[1]), int(m[2] or m[1])
+    if not lo <= a <= b <= hi:
+        raise Bad(f"{what}: {lo}-{hi}")
+    return (a, b)
+
+
+def nets(v, what, maxn=MAX_CIDRS):
+    if not isinstance(v, list):
+        raise Bad(f"{what} must be a list")
+    if len(v) > maxn:
+        raise Bad(f"{what}: too many entries")
+    n4, n6 = [], []
+    for c in v:
+        try:
+            n = ipaddress.ip_network(str(c), strict=False)
+        except ValueError:
+            raise Bad(f"{what}: bad address {str(c)[:40]!r}")
+        (n4 if n.version == 4 else n6).append(n)
+    return [str(n) for n in ipaddress.collapse_addresses(n4)], [str(n) for n in ipaddress.collapse_addresses(n6)]
+
+
+def check_rule(r):
+    if not isinstance(r, dict):
+        raise Bad("rule must be an object")
+    rid = r.get("id")
+    if not isinstance(rid, int) or not 0 < rid < 10 ** 6:
+        raise Bad("bad rule id")
+    if r.get("mode") not in ("log", "enforce"):
+        raise Bad(f"rule {rid}: mode log|enforce")
+    if r.get("action", "block") not in ("block", "reject", "allow"):
+        raise Bad(f"rule {rid}: action block|reject|allow")
+    proto = r.get("proto") or "any"
+    if proto not in ("tcp", "udp", "any", "icmp"):
+        raise Bad(f"rule {rid}: protocol tcp|udp|icmp|any")
+    x = {"id": rid, "mode": r["mode"], "action": r.get("action", "block"), "proto": proto,
+         "ports": ports(r.get("ports")), "sports": ports(r.get("sports"), "source port")}
+    if proto == "icmp" and (x["ports"] or x["sports"]):
+        raise Bad(f"rule {rid}: ICMP has no ports")
+    fam = r.get("family") or "any"
+    if fam not in ("any", "ip4", "ip6"):
+        raise Bad(f"rule {rid}: family any|ip4|ip6")
+    x["family"] = fam
+    x["src4"], x["src6"] = nets(r.get("src") or [], f"rule {rid} sources")
+    x["not4"], x["not6"] = nets(r.get("src_not") or [], f"rule {rid} exceptions", 5000)
+    x["dst4"], x["dst6"] = nets(r.get("dst") or [], f"rule {rid} destinations", 64)
+    x["src_given"] = bool(r.get("src"))
+    if x["src_given"] and not (x["src4"] or x["src6"]):
+        raise Bad(f"rule {rid}: sources resolved to no addresses")
+    st = r.get("state") or ""
+    if st not in ("", "new", "any", "est"):
+        raise Bad(f"rule {rid}: state new|est|any")
+    x["state"] = st
+    x["frag"], x["tcp_bad"], x["bogon"], x["spoof"], x["nosyn"] = (bool(r.get(k)) for k in ("frag", "tcp_bad", "bogon", "spoof", "nosyn"))
+    x["mss"] = rng(r.get("mss"), 0, 65535, f"rule {rid} MSS")
+    x["ttl"] = rng(r.get("ttl"), 0, 255, f"rule {rid} TTL")
+    x["len"] = rng(r.get("len"), 0, 65535, f"rule {rid} packet size")
+    if (x["tcp_bad"] or x["mss"] or x["nosyn"]) and proto != "tcp":
+        raise Bad(f"rule {rid}: TCP flag / MSS checks need protocol tcp")
+    mac = [str(m).lower() for m in r.get("mac") or []]
+    if len(mac) > 64 or not all(MAC_RE.match(m) for m in mac):
+        raise Bad(f"rule {rid}: MAC addresses like 02:00:00:aa:bb:cc (up to 64)")
+    vlan = r.get("vlan") or []
+    if len(vlan) > 64 or not all(isinstance(v, int) and 0 <= v <= 4095 for v in vlan):
+        raise Bad(f"rule {rid}: VLAN ids 0-4095")
+    x["mac"], x["vlan"] = mac, vlan
+    pl = r.get("payload") or []
+    if not isinstance(pl, list) or len(pl) > 4:
+        raise Bad(f"rule {rid}: up to 4 payload matches")
+    x["payload"] = []
+    for p in pl:
+        at, hx = p.get("at", 0) if isinstance(p, dict) else None, str((p or {}).get("hex") or "").lower().replace(" ", "")
+        if not isinstance(at, int) or not 0 <= at <= 1400 or not re.fullmatch(r"([0-9a-f]{2}){1,16}", hx):
+            raise Bad(f"rule {rid}: payload = byte offset 0-1400 + 1-16 bytes of hex")
+        x["payload"].append((at, hx))
+    if x["payload"] and proto not in ("tcp", "udp"):
+        raise Bad(f"rule {rid}: payload matching needs protocol tcp or udp")
+    lim = r.get("limit")
+    x["limit"] = None
+    if lim:
+        what, n, per, burst, by = lim.get("what"), lim.get("n"), lim.get("per", "minute"), lim.get("burst", 0), lim.get("by", "ip")
+        if what not in ("conn", "pkt", "bytes", "concurrent") or by not in ("ip", "net", "all") or per not in ("second", "minute"):
+            raise Bad(f"rule {rid}: limit = conn|pkt|bytes|concurrent per ip|net|all, per second|minute")
+        if not isinstance(n, int) or not 1 <= n <= 10 ** 7 or not isinstance(burst, int) or not 0 <= burst <= 10 ** 6:
+            raise Bad(f"rule {rid}: limit 1-10000000, burst 0-1000000")
+        if what == "concurrent" and by == "all":
+            raise Bad(f"rule {rid}: concurrent connections are counted per IP or per network")
+        if what == "concurrent" and proto == "icmp":
+            raise Bad(f"rule {rid}: concurrent connections need tcp or udp")
+        x["limit"] = {"what": what, "n": n, "per": per, "burst": burst, "by": by}
+    if x["action"] == "allow" and x["limit"]:
+        raise Bad(f"rule {rid}: an allow rule can't have a limit")
+    fl = r.get("flags")
+    x["flags"] = None
+    if fl:
+        mask, on = fl.get("mask") or [], fl.get("set") or []
+        if not isinstance(mask, list) or not isinstance(on, list) or not mask or any(f not in TCP_FLAGS for f in mask + on) \
+                or not set(on) <= set(mask):
+            raise Bad(f"rule {rid}: TCP flags = mask (checked flags) + set (which of them must be on): {', '.join(TCP_FLAGS)}")
+        if proto != "tcp":
+            raise Bad(f"rule {rid}: TCP flags need protocol tcp")
+        x["flags"] = ([f for f in TCP_FLAGS if f in mask], [f for f in TCP_FLAGS if f in on])
+    ic = r.get("icmp") or []
+    if not isinstance(ic, list) or any(t not in ICMP4 and t not in ICMP6 for t in ic) or len(ic) > 12:
+        raise Bad(f"rule {rid}: ICMP types: {', '.join(sorted(set(ICMP4) | set(ICMP6)))}")
+    if ic and proto != "icmp":
+        raise Bad(f"rule {rid}: ICMP types need protocol icmp")
+    x["icmp"] = list(dict.fromkeys(ic))
+    x["invalid"] = bool(r.get("invalid"))
+    hr = str(r.get("hours") or "")
+    x["hours"] = None
+    if hr:
+        m = re.fullmatch(r"([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)", hr.replace(" ", ""))
+        if not m or m.group(1, 2) == m.group(3, 4):
+            raise Bad(f"rule {rid}: hours like 08:00-18:00 (22:00-06:00 wraps over midnight)")
+        x["hours"] = (f"{m[1]}:{m[2]}", f"{m[3]}:{m[4]}")
+    dy = r.get("days") or []
+    if not isinstance(dy, list) or any(d not in DAYS for d in dy):
+        raise Bad(f"rule {rid}: days {', '.join(DAYS)}")
+    x["days"] = [d for d in DAYS if d in dy] if len(set(dy)) < 7 else []
+    ds = r.get("dscp") or []
+    if not isinstance(ds, list) or len(ds) > 16 or not all(isinstance(d, int) and 0 <= d <= 63 for d in ds):
+        raise Bad(f"rule {rid}: DSCP values 0-63")
+    x["dscp"] = sorted(set(ds))
+    os_ = r.get("osf") or []
+    if not isinstance(os_, list) or len(os_) > 16 or not all(isinstance(o, str) and OSF_RE.match(o) for o in os_):
+        raise Bad(f"rule {rid}: OS names like Linux, Windows, FreeBSD, unknown (up to 16)")
+    if os_ and proto != "tcp":
+        raise Bad(f"rule {rid}: OS fingerprints are read from TCP SYNs: protocol tcp")
+    x["osf"] = list(dict.fromkeys(os_))
+    dyn = r.get("dyn") or []
+    if not isinstance(dyn, list) or not all(isinstance(d, int) and 0 < d < 10 ** 6 for d in dyn) or len(dyn) > MAX_DYN:
+        raise Bad(f"rule {rid}: dyn = dynamic list ids")
+    x["dyn"] = sorted(set(dyn))
+    bn = r.get("ban")
+    x["ban"] = None
+    if bn:
+        if not isinstance(bn, dict) or not isinstance(bn.get("list"), int) or not isinstance(bn.get("secs"), int) or not 60 <= bn["secs"] <= 30 * 86400:
+            raise Bad(f"rule {rid}: ban = {{list: dynamic list id, secs: 60-2592000}}")
+        if x["action"] == "allow":
+            raise Bad(f"rule {rid}: an allow rule can't ban")
+        x["ban"] = {"list": bn["list"], "secs": bn["secs"]}
+    early = [k for k in EARLY_KEYS if x[k]]
+    conn = [k for k in CONN_KEYS if x.get(k) or (k == "dst" and (x["dst4"] or x["dst6"]))]
+    if proto == "icmp" and x["limit"] and x["limit"]["what"] in ("pkt", "bytes") and not [k for k in conn if k != "limit"]:
+        conn.remove("limit")                            # ICMP to the proxy itself never reaches forward: rate it at ingress
+        early.append("limit")
+    pre = [k for k in PRE_KEYS if x[k]]
+    if early and conn:
+        raise Bad(f"rule {rid}: packet checks ({', '.join(early)}) run before connection tracking and can't be combined with "
+                  f"connection checks ({', '.join(conn)}): make two rules")
+    if pre and (early or conn):
+        raise Bad(f"rule {rid}: the invalid-state check runs on its own (before port forwarding): make it a separate rule")
+    x["stage"] = "early" if early else "pre" if pre else "conn"
+    if x["stage"] == "pre":
+        if not x["ports"]:
+            raise Bad(f"rule {rid}: the invalid-state check sees this host's own traffic too, so it must name the ports it protects")
+        if x["action"] == "allow":
+            raise Bad(f"rule {rid}: the invalid-state check can only drop or reject")
+    if x["stage"] == "early":
+        if not x["ports"] and x["proto"] != "icmp":
+            raise Bad(f"rule {rid}: packet checks see this host's own traffic too, so they must name the ports they protect")
+        if x["action"] == "reject":
+            raise Bad(f"rule {rid}: packet checks can drop, not reject")
+    if (x["mac"] or x["vlan"]) and x["action"] == "allow":
+        raise Bad(f"rule {rid}: MAC/VLAN allow rules aren't supported")
+    if x["family"] == "ip4" and (x["src6"] or x["dst6"]) or x["family"] == "ip6" and (x["src4"] or x["dst4"]):
+        raise Bad(f"rule {rid}: addresses don't match the chosen IP version")
+    return x
+
+
+def check_ban(b):
+    if not isinstance(b, dict) or not isinstance(b.get("id"), int):
+        raise Bad("bad ban")
+    n = ipaddress.ip_network(str(b.get("value")), strict=False)
+    if not n.is_global:
+        raise Bad("only public addresses can be banned")
+    d = str(b.get("dur") or "")
+    m = re.fullmatch(r"(\d{1,6})h", d)
+    if d != "permanent" and not m:
+        raise Bad("ban dur: permanent or <N>h")
+    return {"id": b["id"], "net": str(n.network_address) if n.num_addresses == 1 else str(n), "v": n.version,
+            "secs": None if d == "permanent" else int(m[1]) * 3600}
+
+
+def upgrade(p):
+    """Payload v1 ({"l4": [...]}) → v2 rules."""
+    if p.get("v") == 2 or "l4" not in p:
+        return p
+    rules = []
+    for r in p.get("l4") or []:
+        if not isinstance(r, dict):
+            raise Bad("rule must be an object")
+        x = {"id": r.get("id"), "mode": r.get("mode"), "action": "block", "proto": r.get("proto"), "ports": r.get("ports"), "state": "new"}
+        if r.get("kind") == "rate":
+            x["limit"] = {"what": "conn", "n": r.get("rate"), "per": "minute", "burst": r.get("burst", 0), "by": "ip"}
+        elif r.get("kind") == "geo":
+            x["src"] = [c for c in r.get("cidrs") or []]
+            if not x["src"]:
+                continue                                # v1 skipped empty geo sets silently too
+        else:
+            raise Bad("v1 rule kind rate|geo")
+        rules.append(x)
+    return {"v": 2, "bans": p.get("bans") or [], "rules": rules}
+
+
+def check_payload(p):
+    if not isinstance(p, dict):
+        raise Bad("payload must be an object")
+    p = upgrade(p)
+    rules, bans = p.get("rules") or [], p.get("bans") or []
+    if len(rules) > MAX_RULES or len(bans) > MAX_BANS:
+        raise Bad("too many rules or bans")
+    rules = [check_rule(r) for r in rules]
+    if len({r["id"] for r in rules}) != len(rules):
+        raise Bad("duplicate rule id")
+    if sum(len(r["src4"]) + len(r["src6"]) for r in rules) > MAX_CIDRS:
+        raise Bad("too many addresses")
+    try:
+        bans = [check_ban(b) for b in bans]
+    except ValueError as e:
+        raise Bad(f"bad ban: {e}")
+    dyn = p.get("dyn") or []
+    if not isinstance(dyn, list) or len(dyn) > MAX_DYN:
+        raise Bad(f"up to {MAX_DYN} dynamic lists")
+    dl = {}
+    for d in dyn:
+        if not isinstance(d, dict) or not isinstance(d.get("id"), int) or not 0 < d["id"] < 10 ** 6:
+            raise Bad("bad dynamic list")
+        dl[d["id"]] = {"id": d["id"], "enforce": bool(d.get("enforce"))}
+    for r in rules:
+        for lid in r["dyn"] + ([r["ban"]["list"]] if r["ban"] else []):
+            if lid not in dl:
+                raise Bad(f"rule {r['id']}: dynamic list {lid} isn't in the payload")
+    t = p.get("trap")
+    trap = None
+    if t:
+        if not isinstance(t, dict) or t.get("mode") not in ("log", "enforce") or t.get("list") not in dl:
+            raise Bad("trap = {mode log|enforce, list: dynamic list id, n, secs, decoys}")
+        n, secs = t.get("n", 10), t.get("secs", 3600)
+        if not isinstance(n, int) or not 2 <= n <= 1000 or not isinstance(secs, int) or not 60 <= secs <= 30 * 86400:
+            raise Bad("trap: n 2-1000 closed ports a minute, secs 60-2592000")
+        trap = {"mode": t["mode"], "list": t["list"], "n": n, "secs": secs, "decoys": ports(t.get("decoys"), "decoy port")}
+    return {"rules": rules, "bans": bans, "dyn": sorted(dl.values(), key=lambda d: d["id"]), "trap": trap}
+
+
+def own_ports():
+    """Ports this host itself uses on any address (listening sockets + WireGuard): early rules may never touch them."""
+    res = {"tcp": set(), "udp": set()}
+    for proto, flag in (("tcp", "-Hltn"), ("udp", "-Hlun")):
+        try:
+            r = subprocess.run(["ss", flag], capture_output=True, text=True, timeout=10)
+            for line in r.stdout.splitlines():
+                f = line.split()
+                if len(f) >= 4 and ":" in f[3]:
+                    p = f[3].rsplit(":", 1)[1]
+                    if p.isdigit():
+                        res[proto].add(int(p))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    try:
+        r = subprocess.run(["wg", "show", "all", "listen-port"], capture_output=True, text=True, timeout=10)
+        for line in r.stdout.splitlines():
+            f = line.split()
+            if len(f) == 2 and f[1].isdigit():
+                res["udp"].add(int(f[1]))
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return res
+
+
+def guard_early(v, mine):
+    t = v.get("trap")
+    for p in (t or {}).get("decoys", []):
+        a, _, b = p.partition("-")
+        hit = sorted(x for proto in ("tcp", "udp") for x in mine.get(proto, ()) if int(a) <= x <= int(b or a))
+        if hit:
+            raise Bad(f"decoy port {hit[0]} is used by this host itself; decoys must be ports nothing listens on")
+    for r in v["rules"]:
+        if r["stage"] not in ("early", "pre"):
+            continue
+        for p in r["ports"]:
+            a, _, b = p.partition("-")
+            a, b = int(a), int(b or a)
+            for proto in (("tcp", "udp") if r["proto"] == "any" else (r["proto"],)):
+                hit = sorted(x for x in mine.get(proto, ()) if a <= x <= b)
+                if hit:
+                    raise Bad(f"rule {r['id']}: {proto} port {hit[0]} is used by this host itself (SSH, VPN, ...); packet checks "
+                              "only protect forwarded ports")
+
+
+# ---------------------------------------------------------------- render
+
+def fams(r):
+    if r["osf"]:
+        return ["ip4"] if r["family"] in ("any", "ip4") else []    # osf reads IPv4 SYNs only
+    if r["family"] != "any":
+        return [r["family"]]
+    if r["src_given"]:
+        return [f for f, k in (("ip4", "src4"), ("ip6", "src6")) if r[k]]
+    if r["dst4"] or r["dst6"]:
+        return [f for f, k in (("ip4", "dst4"), ("ip6", "dst6")) if r[k]]
+    return ["ip4", "ip6"]
+
+
+def setdecl(name, typ, el, extra=""):
+    return f"    set {name} {{ type {typ}; flags interval; auto-merge;{extra}" + (f" elements = {{ {', '.join(el)} }};" if el else "") + " }"
+
+
+def rule_lines(r, sets):
+    """nft match lines for one rule (one per IP version), each ending in its action chain."""
+    rid, early, L = r["id"], r["stage"] == "early", []
+    for f in fams(r):
+        v6 = f == "ip6"
+        ip = "ip6" if v6 else "ip"
+        ict = [ICMP6[t] for t in r["icmp"] if t in ICMP6] if v6 else [t for t in r["icmp"] if t in ICMP4]
+        if r["icmp"] and not ict:
+            continue                                # e.g. timestamp-request: IPv4 only
+        if early:                                   # L2 first; a VLAN tag moves the IP version into the VLAN header
+            m = ([f"ether saddr {{ {', '.join(r['mac'])} }}"] if r["mac"] else []) + (
+                [f"vlan id {{ {', '.join(str(x) for x in r['vlan'])} }}", f"vlan type {ip}"] if r["vlan"] else [f"meta protocol {ip}"])
+        else:
+            m = [f"meta nfproto {'ipv6' if v6 else 'ipv4'}"]
+        if r["proto"] == "icmp":
+            m.append("meta l4proto ipv6-icmp" if v6 else "meta l4proto icmp")
+            if ict:
+                m.append(f"{'icmpv6' if v6 else 'icmp'} type {{ {', '.join(ict)} }}")
+        elif r["proto"] != "any":
+            m.append(f"meta l4proto {r['proto']}")
+        elif r["ports"] or r["sports"] or r["payload"] or (r["limit"] or {}).get("what") == "concurrent":
+            m.append("meta l4proto { tcp, udp }")
+        dp, sp = ("th dport", "th sport") if r["stage"] != "conn" else ("ct original proto-dst", "ct original proto-src")
+        if r["ports"]:
+            m.append(f"{dp} {{ {', '.join(r['ports'])} }}")
+        if r["sports"]:
+            m.append(f"{sp} {{ {', '.join(r['sports'])} }}")
+        fk = "6" if v6 else "4"
+        if r["src" + fk]:
+            n = f"s{rid}_{fk}"
+            sets.append(setdecl(n, "ipv6_addr" if v6 else "ipv4_addr", r["src" + fk]))
+            m.append(f"{ip} saddr @{n}")
+        if r["not" + fk]:
+            n = f"x{rid}_{fk}"
+            sets.append(setdecl(n, "ipv6_addr" if v6 else "ipv4_addr", r["not" + fk]))
+            m.append(f"{ip} saddr != @{n}")
+        if r["dst" + fk]:
+            m.append(f"ct original {ip} daddr {{ {', '.join(r['dst' + fk])} }}")
+        for lid in r["dyn"]:
+            m.append(f"{ip} saddr @d{lid}_{fk}")
+        if r["bogon"]:
+            m.append(f"{ip} saddr @bogon{fk}")
+        if r["dscp"]:
+            m.append(f"{ip} dscp {{ {', '.join(str(d) for d in r['dscp'])} }}")
+        if r["hours"]:
+            h0, h1 = r["hours"]                     # the proxy's local time; nft 1.0.x mangles ranges over midnight, so negate
+            m.append(f'meta hour "{h0}"-"{h1}"' if h0 < h1 else f'meta hour != "{h1}"-"{h0}"')
+        if r["days"]:
+            m.append("meta day { " + ", ".join(f'"{DAYS[d]}"' for d in r["days"]) + " }")
+        if r["frag"]:
+            # only the first fragment carries the ports; dropping it makes the whole packet fail reassembly
+            m.append(("frag frag-off 0 frag more-fragments 1" if v6 else "ip frag-off & 0x3fff == 0x2000")
+                     if r["ports"] else ("exthdr frag exists" if v6 else "ip frag-off & 0x3fff != 0"))
+        if r["ttl"]:
+            a, b = r["ttl"]
+            m.append(f"{'ip6 hoplimit' if v6 else 'ip ttl'} {a}" + (f"-{b}" if b != a else ""))
+        if r["len"]:
+            a, b = r["len"]
+            m.append(f"meta length {a}" + (f"-{b}" if b != a else ""))
+        if r["tcp_bad"]:
+            m.append(f"tcp flags & (fin|syn|rst|psh|ack|urg) {{ {BAD_FLAGS} }}")
+        if r["mss"]:
+            a, b = r["mss"]
+            m.append("tcp flags syn tcp option maxseg size " + str(a) + (f"-{b}" if b != a else ""))
+        if r["nosyn"]:
+            m.append("tcp flags & (fin|syn|rst|ack) != syn")
+        if r["flags"]:
+            mask, on = r["flags"]
+            m.append(f"tcp flags & ({'|'.join(mask)}) == " + ("|".join(on) if on else "0x0"))
+        if r["invalid"]:
+            m.append("ct state invalid")
+        if r["osf"]:
+            m.append("tcp flags & (syn|ack) == syn osf name { " + ", ".join(f'"{o}"' for o in r["osf"]) + " }")
+        if r["stage"] == "conn":
+            st = r["state"] or ("any" if r["payload"] or (r["limit"] or {}).get("what") in ("pkt", "bytes") else "new")
+            m.append({"new": "ct state new", "est": "ct state established", "any": ""}[st])
+        for at, hx in r["payload"]:
+            m.append(f"@ih,{at * 8},{len(hx) * 4} 0x{hx}")
+        if r["spoof"]:
+            m.append("fib saddr . iif oif missing")
+        lim = r["limit"]
+        if lim:
+            what, n, per = lim["what"], lim["n"], lim["per"]
+            lt = (f"limit rate over {n} kbytes/{per}" + (f" burst {lim['burst']} kbytes" if lim["burst"] else "")) if what == "bytes" \
+                else f"ct count over {n}" if what == "concurrent" \
+                else f"limit rate over {n}/{per} burst {lim['burst'] or 1} packets"
+            if lim["by"] == "all":
+                m.append(lt)
+            else:
+                key = f"{ip} saddr" + ((" & ffff:ffff:ffff:ffff::" if v6 else " & 255.255.255.0") if lim["by"] == "net" else "")
+                n_ = f"m{rid}_{fk}"
+                sets.append(f"    set {n_} {{ type {'ipv6_addr' if v6 else 'ipv4_addr'}; size 65535; flags dynamic"
+                            + (";" if what == "concurrent" else ",timeout; timeout 5m;") + " }")
+                m.append(f"add @{n_} {{ {key} {lt} }}")
+        if r["ban"] and r["mode"] == "enforce":
+            m.append(f"add @d{r['ban']['list']}_{fk} {{ {ip} saddr timeout {r['ban']['secs']}s }}")
+        L.append("    " + " ".join(x for x in m if x) + f" counter jump a{rid} comment \"lw-waf:{rid}\"")
+    return L
+
+
+def action_chain(r):
+    v = ""
+    if r["mode"] == "enforce":
+        v = {"block": " drop;", "allow": " accept;",
+             "reject": " meta l4proto tcp reject with tcp reset; reject with icmpx port-unreachable;"}[r["action"]]
+    return f"    chain a{r['id']} {{ limit rate {LOG_RATE} log prefix \"lw-waf:{r['id']} \" level info;{v} }}"
+
+
+def order(r):
+    return (r["action"] != "allow", r["limit"] is not None, r["id"])    # allows first; a blocked source never fills a meter
+
+
+def dynsets(v):
+    return [f"    set d{d['id']}_{fk} {{ type {typ}; size {DYN_SIZE}; flags dynamic,timeout; }}"
+            for d in v["dyn"] for fk, typ in (("4", "ipv4_addr"), ("6", "ipv6_addr"))]
+
+
+def trap_lines(v, sets):
+    """Port-scan trap: new connections from the internet to ports that are neither forwarded nor used by this host. More than
+    n distinct closed ports a minute (or one decoy port) and the source goes on the dynamic list."""
+    t, mine = v["trap"], v.get("own") or {"tcp": set(), "udp": set()}
+    lid, en = t["list"], t["mode"] == "enforce"
+    sets += [setdecl("own_t", "inet_service", [str(x) for x in sorted(mine["tcp"])]),
+             setdecl("own_u", "inet_service", [str(x) for x in sorted(mine["udp"])])]
+    L = ["    chain lwtrap {", "        type filter hook prerouting priority dstnat + 10; policy accept;",
+         f"        iifname != \"{WAN}\" return", "        ct state != new return", "        ct status dnat return",
+         "        fib daddr type != local return", "        meta l4proto != { tcp, udp } return",
+         "        tcp dport @own_t return", "        udp dport @own_u return"]
+    for fk, ip, typ in (("4", "ip", "ipv4_addr"), ("6", "ip6", "ipv6_addr")):
+        add = f" add @d{lid}_{fk} {{ {ip} saddr timeout {t['secs']}s }}" if en else ""
+        if t["decoys"]:
+            L.append(f"        meta nfproto {'ipv6' if fk == '6' else 'ipv4'} th dport {{ {', '.join(t['decoys'])} }}{add} counter jump atrap comment \"lw-waf:trap\"")
+        sets += [f"    set ts{fk} {{ type {typ} . inet_service; size {DYN_SIZE}; flags dynamic,timeout; timeout 60s; }}",
+                 f"    set tc{fk} {{ type {typ}; size {DYN_SIZE}; flags dynamic,timeout; timeout 5m; }}"]
+        L.append(f"        {ip} saddr . th dport != @ts{fk} add @ts{fk} {{ {ip} saddr . th dport }} "
+                 f"add @tc{fk} {{ {ip} saddr limit rate over {t['n']}/minute burst {t['n']} packets }}{add} counter jump atrap comment \"lw-waf:trap\"")
+    L.append("    }")
+    L.append(f"    chain atrap {{ limit rate {LOG_RATE} log prefix \"lw-waf:trap \" level info;{' drop;' if en else ''} }}")
+    return L
+
+
+def render(v):
+    v.setdefault("dyn", []); v.setdefault("trap", None)
+    early = sorted((r for r in v["rules"] if r["stage"] == "early"), key=order)
+    conn = sorted((r for r in v["rules"] if r["stage"] == "conn"), key=order)
+    pre = sorted((r for r in v["rules"] if r["stage"] == "pre"), key=order)
+    bogon = [setdecl("bogon4", "ipv4_addr", BOGON4), setdecl("bogon6", "ipv6_addr", BOGON6)]
+    # early stage: its own netdev table, bound to the public interface (removed when there are no early rules)
+    L = [f"table netdev {ETABLE}", f"delete table netdev {ETABLE}"]
+    if early:
+        sets, body = [], []
+        for r in early:
+            body += rule_lines(r, sets)
+        L += [f"table netdev {ETABLE} {{"] + bogon + sets + [action_chain(r) for r in early] + [
+            "    chain lwin {", f"        type filter hook ingress device \"{WAN}\" priority -500; policy accept;"] + body + ["    }", "}"]
+    L += [f"table inet {TABLE}", f"delete table inet {TABLE}", f"table inet {TABLE} {{"]
+    bans, sets, body = {}, [], []
+    for b in v["bans"]:                                 # collapse duplicates: the longest timeout wins
+        cur = bans.get(b["net"], 0)
+        bans[b["net"]] = None if cur is None or b["secs"] is None else max(cur, b["secs"])
+    for fk, typ in (("4", "ipv4_addr"), ("6", "ipv6_addr")):
+        el = [n + ("" if s is None else f" timeout {s}s") for n, s in sorted(bans.items()) if (":" in n) == (fk == "6")]
+        L.append(f"    set ban{fk} {{ type {typ}; flags interval,timeout; auto-merge;" + (f" elements = {{ {', '.join(el)} }};" if el else "") + " }")
+    for r in conn:
+        body += rule_lines(r, sets)
+    pbody = []
+    for r in pre:
+        pbody += rule_lines(r, sets)
+    chains = trap_lines(v, sets) if v["trap"] else []
+    L += bogon + dynsets(v) + sets + [action_chain(r) for r in conn + pre]
+    L.append(f"    chain a0 {{ limit rate {LOG_RATE} log prefix \"lw-waf:ban \" level info; drop; }}")
+    for d in v["dyn"]:
+        L.append(f"    chain ad{d['id']} {{ limit rate {LOG_RATE} log prefix \"lw-waf:d{d['id']} \" level info;{' drop;' if d['enforce'] else ''} }}")
+    L += chains
+    if pre:
+        L += ["    chain lwpre {", "        type filter hook prerouting priority -150; policy accept;",
+              f"        iifname != \"{WAN}\" return"] + ["    " + x for x in pbody] + ["    }"]
+    L += ["    chain lwfwd {", "        type filter hook forward priority filter - 5; policy accept;",
+          f"        iifname != \"{WAN}\" return",
+          "        ip saddr @ban4 counter jump a0 comment \"lw-waf:ban\"",
+          "        ip6 saddr @ban6 counter jump a0 comment \"lw-waf:ban\"",
+          "        ct status != dnat return"]
+    for d in v["dyn"]:                                 # listed sources: forwarded traffic only, this host stays reachable
+        L += [f"        ip saddr @d{d['id']}_4 counter jump ad{d['id']} comment \"lw-waf:d{d['id']}\"",
+              f"        ip6 saddr @d{d['id']}_6 counter jump ad{d['id']} comment \"lw-waf:d{d['id']}\""]
+    L += ["    " + x for x in body] + ["    }", "}", ""]
+    return "\n".join(L)
+
+
+# ---------------------------------------------------------------- apply / confirm / rollback
+
+def run(cmd, inp=None, timeout=60):
+    return subprocess.run(cmd, input=inp, capture_output=True, text=True, timeout=timeout)
+
+
+def gens():
+    os.makedirs(STATE, exist_ok=True)
+    return sorted(f for f in os.listdir(STATE) if re.fullmatch(r"\d+\.nft", f))
+
+
+def dyn_dump():
+    """{set name: [(value, seconds left)]} of every dynamic list (d<id>_4/6) now loaded."""
+    r = run(NFT + ["-j", "list", "table", "inet", TABLE])
+    res = {}
+    if r.returncode:
+        return res
+    for x in json.loads(r.stdout).get("nftables", []):
+        st = x.get("set")
+        if not st or not re.fullmatch(r"d\d+_[46]", st.get("name", "")):
+            continue
+        el = []
+        for e in st.get("elem", []):
+            e = e.get("elem", e) if isinstance(e, dict) else {"val": e}
+            val, left = e.get("val"), int(e.get("expires") or 0)
+            if isinstance(val, str) and left > 1:
+                el.append((val, left))
+        res[st["name"]] = el
+    return res
+
+
+def dyn_restore(d):
+    names = {x.get("set", {}).get("name") for x in json.loads(run(NFT + ["-j", "list", "table", "inet", TABLE]).stdout or "{}").get("nftables", [])}
+    for name, el in d.items():
+        if name not in names or not el:
+            continue
+        for i in range(0, len(el), 500):
+            run(NFT + ["-f", "-"], inp=f"add element inet {TABLE} {name} {{ " + ", ".join(f"{v} timeout {s}s" for v, s in el[i:i + 500]) + " }\n")
+
+
+def load(path):
+    if ETABLE not in open(path).read():               # snapshot from v1 (no early stage): drop the early table too
+        run(NFT + ["delete", "table", "netdev", ETABLE])
+    r = run(NFT + ["-c", "-f", path])
+    if r.returncode:
+        raise Bad("nft check: " + r.stderr.strip()[-400:])
+    keep = dyn_dump()
+    r = run(NFT + ["-f", path])
+    if r.returncode:
+        raise Bad("nft load: " + r.stderr.strip()[-400:])
+    dyn_restore(keep)
+
+
+def arm(gen):
+    """Dead-man timer: revert to generation `gen` unless confirmed. systemd-run when there is systemd, else a detached sleeper."""
+    unit = f"lw-waf-revert-{gen}"
+    if shutil.which("systemd-run") and os.path.isdir("/run/systemd/system"):
+        r = run(["systemd-run", "--quiet", f"--unit={unit}", f"--on-active={CONFIRM_SECS}", "--timer-property=AccuracySec=1s",
+                 sys.executable, "-I", SELF, f"revert {gen}"], timeout=20)
+        if r.returncode == 0:
+            return unit
+    pid = os.fork()
+    if pid == 0:                                       # double fork: survives the SSH session ending
+        os.setsid()
+        if os.fork():
+            os._exit(0)
+        fd = os.open(os.devnull, os.O_RDWR)
+        for i in (0, 1, 2):
+            os.dup2(fd, i)
+        time.sleep(CONFIRM_SECS)
+        os.execv(sys.executable, [sys.executable, "-I", SELF, f"revert {gen}"])
+    os.waitpid(pid, 0)
+    return ""
+
+
+def apply(raw):
+    if len(raw) > MAX_PAYLOAD:
+        raise Bad("payload too large")
+    p = json.loads(raw)
+    v = check_payload(p)
+    v["own"] = own_ports()
+    guard_early(v, v["own"])
+    text = render(v)
+    os.makedirs(DIR, exist_ok=True)
+    old = open(FILE).read() if os.path.exists(FILE) else None
+    res = {"ok": True, "v": VERSION, "rules": len(v["rules"]), "bans": len(v["bans"]),
+           "early": sum(r["stage"] == "early" for r in v["rules"]), "dyn": len(v["dyn"]), "trap": bool(v["trap"])}
+    if old == text:
+        return dict(res, changed=False)
+    gen = str(time.time_ns())
+    if old is not None:
+        shutil.copy2(FILE, os.path.join(STATE, f"{gen}.nft"))
+        for f in gens()[:-KEEP]:
+            os.unlink(os.path.join(STATE, f))
+    tmp = FILE + ".new"
+    with open(tmp, "w") as f:
+        f.write(text)
+    try:
+        load(tmp)
+    except Bad:
+        os.unlink(tmp)
+        raise
+    os.replace(tmp, FILE)
+    res["changed"] = True
+    if old is not None and p.get("confirm", True):
+        unit = arm(gen)
+        with open(PENDING, "w") as f:
+            json.dump({"gen": gen, "unit": unit, "at": time.time(), "secs": CONFIRM_SECS}, f)
+        res.update(pending=gen, confirm_within=CONFIRM_SECS)
+    return res
+
+
+def confirm(gen):
+    if not os.path.exists(PENDING):
+        raise Bad("nothing to confirm (already reverted or confirmed)")
+    pd = json.load(open(PENDING))
+    if pd.get("gen") != gen:
+        raise Bad("a newer change is waiting for confirmation")
+    if pd.get("unit"):
+        run(["systemctl", "stop", pd["unit"] + ".timer"], timeout=20)
+    os.unlink(PENDING)
+    return {"ok": True, "confirmed": gen}
+
+
+def revert(gen):
+    """Timer fired: put generation `gen` back if that change was never confirmed."""
+    if not os.path.exists(PENDING) or json.load(open(PENDING)).get("gen") != gen:
+        return {"ok": True, "skipped": "confirmed"}
+    p = os.path.join(STATE, f"{gen}.nft")
+    os.unlink(PENDING)
+    if not os.path.exists(p):
+        raise Bad("snapshot missing")
+    load(p)
+    shutil.copy2(p, FILE)
+    run(["logger", "-t", "logwatch-nfwafctl", f"lw-waf: change {gen} was not confirmed within {CONFIRM_SECS}s, previous rules restored"])
+    return {"ok": True, "reverted": gen}
+
+
+def rollback():
+    g = gens()
+    if not g:
+        raise Bad("nothing to roll back to")
+    p = os.path.join(STATE, g[-1])
+    load(p)
+    shutil.copy2(p, FILE)
+    os.unlink(p)
+    if os.path.exists(PENDING):
+        os.unlink(PENDING)
+    return {"ok": True, "restored": g[-1]}
+
+
+# ---------------------------------------------------------------- read-only
+
+def counters():
+    res = {}
+    for fam, table in (("inet", TABLE), ("netdev", ETABLE)):
+        r = run(NFT + ["-j", "list", "table", fam, table])
+        if r.returncode:
+            continue
+        for x in json.loads(r.stdout).get("nftables", []):
+            rule = x.get("rule")
+            if not rule or not str(rule.get("comment", "")).startswith("lw-waf:"):
+                continue
+            for e in rule.get("expr", []):
+                if "counter" in e:
+                    k = rule["comment"][7:]
+                    res[k] = res.get(k, 0) + e["counter"]["packets"]
+    return res
+
+
+def hits(hours):
+    """Logged hits per rule (log lines are capped at 5/s, so floods under-count; 'packets' is exact since the last apply)."""
+    r = run(["journalctl", "-k", "-q", "--no-pager", "-o", "short-unix", "--since", f"-{hours}h", "-g", "lw-waf:"], timeout=60)
+    rules = {}
+    for line in r.stdout.splitlines():
+        m = re.search(r"^(\d+)\.\d+ .*?lw-waf:(\w+) .*?SRC=(\S+)", line)
+        if not m:
+            continue
+        x = rules.setdefault(m[2], {"hits": 0, "ips": set(), "last": 0})
+        x["hits"] += 1; x["ips"].add(m[3]); x["last"] = max(x["last"], int(m[1]))
+    pk = counters()
+    res = {k: {"hits": v["hits"], "ips": len(v["ips"]), "last": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(v["last"])),
+               "packets": pk.get(k, 0)} for k, v in rules.items()}
+    for k, n in pk.items():
+        res.setdefault(k, {"hits": 0, "ips": 0, "last": "", "packets": n})
+    return {"ok": True, "hours": hours, "rules": res}
+
+
+def status():
+    n, loaded = 0, run(NFT + ["list", "table", "inet", TABLE]).returncode == 0
+    for s in ("ban4", "ban6"):
+        r = run(NFT + ["-j", "list", "set", "inet", TABLE, s])
+        n += sum(len(x["set"].get("elem", [])) for x in json.loads(r.stdout).get("nftables", []) if "set" in x) if r.returncode == 0 else 0
+    ver = run(NFT + ["--version"]).stdout.strip()
+    pend = json.load(open(PENDING)) if os.path.exists(PENDING) else None
+    dyn = {}
+    for k, el in dyn_dump().items():
+        dyn[k.split("_")[0][1:]] = dyn.get(k.split("_")[0][1:], 0) + len(el)
+    return {"ok": True, "v": VERSION, "nft": ver, "kernel": os.uname().release, "wan": WAN, "loaded": loaded,
+            "file": os.path.exists(FILE), "snapshots": len(gens()), "bans": n, "pending": pend, "dyn": dyn,
+            "osf": os.path.exists(OSF_MARK)}
+
+
+def dyn_list():
+    res = {}
+    for k, el in dyn_dump().items():
+        res.setdefault(k.split("_")[0][1:], []).extend({"ip": v, "left": s} for v, s in sorted(el, key=lambda x: -x[1])[:2000])
+    return {"ok": True, "lists": res}
+
+
+def dyn_clear(lid, ip=None):
+    if not lid.isdigit():
+        raise Bad("clear <list id> [ip]")
+    if ip is not None:
+        a = ipaddress.ip_address(ip)
+        r = run(NFT + ["delete", "element", "inet", TABLE, f"d{lid}_{a.version}", f"{{ {a} }}"])
+        return {"ok": r.returncode == 0, "removed": str(a), **({"err": r.stderr.strip()[-200:]} if r.returncode else {})}
+    for fk in "46":
+        run(NFT + ["flush", "set", "inet", TABLE, f"d{lid}_{fk}"])
+    return {"ok": True, "cleared": lid}
+
+
+def main():
+    argv = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("SSH_ORIGINAL_COMMAND") or "").split()
+    verb = argv[0] if argv else ""
+    try:
+        if verb in ("check", "render"):
+            v = check_payload(json.loads(sys.stdin.read(MAX_PAYLOAD + 1)))
+            v["own"] = own_ports()
+            if verb == "render":
+                out({"ok": True, "text": render(v), "stages": {r["id"]: r["stage"] for r in v["rules"]}})
+            out({"ok": True, "rules": len(v["rules"]), "bans": len(v["bans"]), "stages": {r["id"]: r["stage"] for r in v["rules"]}})
+        if verb == "status":
+            out(status())
+        if verb == "list":
+            out(dyn_list())
+        if verb == "hits":
+            h = int(argv[1]) if len(argv) > 1 and argv[1].isdigit() else 24
+            out(hits(max(1, min(h, 720))))
+        if verb not in ("apply", "rollback", "confirm", "revert", "clear") or (verb in ("confirm", "revert") and (len(argv) != 2 or not argv[1].isdigit())) \
+                or (verb == "clear" and len(argv) not in (2, 3)):
+            raise Bad("usage: apply | confirm <gen> | status | hits [hours] | rollback | check | render | list | clear <list> [ip]")
+        os.makedirs(STATE, exist_ok=True)
+        with open(os.path.join(STATE, ".lock"), "w") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            if verb == "apply":
+                out(apply(sys.stdin.read(MAX_PAYLOAD + 1)))
+            if verb == "clear":
+                out(dyn_clear(argv[1], argv[2] if len(argv) == 3 else None))
+            out(confirm(argv[1]) if verb == "confirm" else revert(argv[1]) if verb == "revert" else rollback())
+    except (Bad, ValueError, KeyError, TypeError) as e:
+        out({"ok": False, "err": str(e)[:400]}, 1)
+
+
+if __name__ == "__main__":
+    main()

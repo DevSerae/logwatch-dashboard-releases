@@ -98,7 +98,7 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 |---|---|
 | **CrowdSec** | A health card per edge host (engine, LAPI, AppSec, bouncer), bans and WAF blocks, repeat offenders, Ban/Unban from the board |
 | **Request / connection log** | Every HTTP request (Nginx Proxy Manager / nginx) and every new connection (nftables) through your edge, on a world map with filters |
-| **Edge WAF** | Custom layer-7 rules from a rule builder, IP/CIDR bans with expiry, country/ASN rules, OWASP CRS level, and **port proxies** for raw TCP/UDP (game servers…). Every change starts log-only, can be simulated against the last 24 h of traffic, and can be undone. Optional push to Cloudflare |
+| **Edge WAF** | Custom layer-7 rules from a rule builder, IP/CIDR bans with expiry, country/ASN rules, OWASP CRS level, **port proxies** for raw TCP/UDP services, named port/IP **lists** you can reuse in rules, and optional rule suggestions, auto-escalation, honeypot traps and bad-bot UA blocking (all off until you turn them on). Every change starts log-only, can be simulated against the last 24 h of traffic, and can be undone. Optional push to Cloudflare |
 
 <p align="center">
   <img src="assets/board-edge-traffic.png" alt="Edge WAF: node health, traffic, countries and networks through the edge" width="88%">
@@ -358,6 +358,28 @@ Manual update any time: run the one-liner again. Your config, secrets and data a
   validates every argument.
 - Containers run as an unprivileged user with config and secrets mounted read-only.
 - Secrets live in `secrets/` (mode 600) on your VM and never leave it. VPN join keys are used once and never stored.
+
+## 🧑‍💻 Source code
+
+The full source is in this repo; each release tarball is built from it with `tools/release.sh`.
+
+| Path | What |
+|---|---|
+| `app/` | board (FastAPI) + worker (collectors) |
+| `installer/` | the web setup (stdlib HTTP server + one page) |
+| `install.sh`, `update.sh` | installer bootstrap, host updater |
+| `config/config.example.yaml` | every setting, commented; `setup.py init` copies it to `config/config.yaml` |
+| `secrets/` | created by setup: `secrets.env` + the board's SSH key. **Never share it** |
+| `data/` | board database, GeoIP files, SSH known_hosts |
+| `remote/` | scripts for the machines being watched: Linux, CrowdSec, Windows |
+| `ai-runner/` | optional "Resolve with AI" runner |
+| `docs/` | network gear, reverse proxy, webhook, remote access |
+| `setup.py` | init, password, secrets, modules, check, render |
+| `tools/release.sh` | builds the release assets into `dist/` |
+
+Run from a checkout instead of a release: `python3 setup.py wizard`, or step by step
+`python3 setup.py init && python3 setup.py set-password`, edit `config/config.yaml`, then
+`python3 setup.py check && python3 setup.py render && docker compose up -d --build`.
 
 ## 🧹 Uninstall
 

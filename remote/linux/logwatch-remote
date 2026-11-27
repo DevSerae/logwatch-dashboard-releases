@@ -1,0 +1,260 @@
+#!/usr/bin/python3
+"""Logwatch Dashboard remote agent: the ONLY thing the board's SSH key can run on this host.
+
+authorized_keys forces:  sudo -n /usr/local/sbin/logwatch-remote "$SSH_ORIGINAL_COMMAND"
+The first word picks a role; a role only runs if /etc/logwatch-remote.conf lists it in ROLES.
+
+  logpull <journal cursor|-> <event file offset>   journal entries + CrowdSec event lines since last time (JSON lines)
+  trafficpull <base64 JSON state|->                new lines of the access/traffic logs in TRAFFIC_GLOBS (JSON lines)
+  csctl list | ban <ip> <1h|4h|24h|168h> | unban <ip>   CrowdSec decisions (needs cscli)
+  images                                           running container images: "<name>\t<repo@digest>" (needs docker)
+  waf apply | status | hits [hours] | rollback | capi   Edge WAF on CrowdSec AppSec (runs logwatch-wafctl; apply reads JSON on stdin)
+  l4waf apply | confirm <gen> | status | hits [hours] | rollback | list | clear <list> [ip]    port-proxy WAF in nftables (runs logwatch-nfwafctl; apply reads JSON on stdin)
+  hello                                            always allowed: enabled roles + which tools they need are present (installer check)
+"""
+import base64
+import glob
+import gzip
+import ipaddress
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+CONF = "/etc/logwatch-remote.conf"
+DEFAULTS = {"ROLES": "", "TRAFFIC_GLOBS": "/var/log/logwatch-traffic.log", "EVENTS": "/var/log/crowdsec-lw-events.json",
+            "BAN_REASON": "manual (Logwatch board)"}
+MAX_J, MAX_TOTAL, MAX_LINE = 20000, 16 << 20, 8192
+DURATIONS = {"1h", "4h", "24h", "168h"}
+
+
+def conf():
+    c = dict(DEFAULTS)
+    try:
+        for line in open(CONF):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                c[k.strip()] = v.strip().strip('"')
+    except OSError:
+        pass
+    return c
+
+
+def out(d):
+    sys.stdout.write(json.dumps(d) + "\n")
+
+
+# --- logpull ----------------------------------------------------------------------------------------------------
+
+def logpull(args, c):
+    cursor = args[0] if args and re.fullmatch(r"[A-Za-z0-9=;_\-]+", args[0]) else "-"
+    offset = int(args[1]) if len(args) > 1 and args[1].isdigit() else 0
+    cmd = ["journalctl", "-o", "json", "--no-pager", "-n", str(MAX_J)]
+    cmd += ["--after-cursor", cursor] if cursor != "-" else ["--since", "-15min"]
+    last = cursor
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    for line in p.stdout.splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        last = e.get("__CURSOR", last)
+        msg = e.get("MESSAGE")
+        if not isinstance(msg, str) or "lw-conn: " in msg[:60] or "lw-drop: " in msg[:60]:
+            continue  # traffic log lines go through trafficpull
+        out({"k": "j", "t": int(e.get("__REALTIME_TIMESTAMP", 0)), "app": e.get("SYSLOG_IDENTIFIER") or e.get("_COMM") or "-",
+             "pri": e.get("PRIORITY", "6"), "unit": e.get("_SYSTEMD_UNIT", ""), "msg": msg[:4000]})
+    try:
+        ev = c["EVENTS"]
+        size = os.path.getsize(ev)
+        if offset > size:
+            offset = 0  # rotated
+        with open(ev, "rb") as f:
+            f.seek(offset)
+            data = f.read(4 << 20)
+        end = data.rfind(b"\n") + 1
+        for line in data[:end].decode("utf-8", "replace").splitlines():
+            if line.strip():
+                out({"k": "e", "line": line})
+        offset += end
+    except OSError:
+        pass
+    out({"k": "end", "cursor": last, "offset": offset})
+
+
+# --- trafficpull ------------------------------------------------------------------------------------------------
+
+def _rotated_tail(path, ino, off):
+    """The file we were reading got rotated: finish it from path.1 / path.1.gz when that is the same file."""
+    for cand in (path + ".1", path + ".1.gz"):
+        try:
+            st = os.stat(cand)
+        except OSError:
+            continue
+        try:
+            if cand.endswith(".gz"):
+                if time.time() - st.st_mtime > 86400:
+                    continue
+                with gzip.open(cand, "rb") as f:
+                    data = f.read(64 << 20)
+                data = data[off:] if len(data) >= off else b""
+            elif st.st_ino == ino:
+                with open(cand, "rb") as f:
+                    f.seek(off)
+                    data = f.read(MAX_TOTAL)
+            else:
+                continue
+        except (OSError, EOFError):
+            return b""
+        return data[:data.rfind(b"\n") + 1]
+    return b""
+
+
+def trafficpull(args, c):
+    raw = args[0] if args else "-"
+    try:
+        state = json.loads(base64.b64decode(raw, validate=True)) if raw != "-" else {}
+        state = state if isinstance(state, dict) else {}
+    except Exception:
+        state = {}
+    budget, new, trunc = MAX_TOTAL, {}, False
+
+    def emit(path, data):
+        for line in data.decode("utf-8", "replace").splitlines():
+            if line.strip():
+                out({"k": "l", "f": os.path.basename(path), "line": line[:MAX_LINE]})
+
+    globs = [g.strip() for g in c["TRAFFIC_GLOBS"].split(",") if g.strip()]
+    for path in sorted({p for g in globs for p in glob.glob(g)}):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        ino, off = st.st_ino, 0
+        prev = state.get(path)
+        if isinstance(prev, list) and len(prev) == 2 and all(isinstance(v, int) for v in prev):
+            if prev[0] == ino:
+                off = prev[1] if prev[1] <= st.st_size else 0  # truncated in place → start over
+            elif budget > 0:
+                tail = _rotated_tail(path, prev[0], prev[1])[:budget]
+                tail = tail[:tail.rfind(b"\n") + 1]
+                budget -= len(tail)
+                emit(path, tail)
+        if budget <= 0:
+            new[path], trunc = [ino, off], True
+            continue
+        try:
+            with open(path, "rb") as f:
+                f.seek(off)
+                data = f.read(budget)
+        except OSError:
+            continue
+        end = data.rfind(b"\n") + 1
+        if end == 0 and len(data) >= budget:
+            trunc = True
+        emit(path, data[:end])
+        budget -= end
+        new[path] = [ino, off + end]
+        if off + end < st.st_size and budget <= 0:
+            trunc = True
+    out({"k": "end", "state": new, "trunc": trunc})
+
+
+# --- csctl ------------------------------------------------------------------------------------------------------
+
+def csctl(args, c):
+    def cscli(*a):
+        r = subprocess.run(["cscli", *a], capture_output=True, text=True, timeout=30)
+        return r.returncode, (r.stdout + r.stderr).strip()
+
+    if args == ["list"]:
+        rc, txt = cscli("decisions", "list", "-o", "json")
+    elif len(args) in (2, 3) and args[0] in ("ban", "unban"):
+        try:
+            ip = ipaddress.ip_address(args[1])
+        except ValueError:
+            sys.exit("bad ip")
+        if args[0] == "unban" and len(args) == 2:
+            rc, txt = cscli("decisions", "delete", "-i", str(ip))
+        elif args[0] == "ban" and len(args) == 3 and args[2] in DURATIONS:
+            if not ip.is_global:
+                sys.exit("refusing to ban a private/loopback address")
+            rc, txt = cscli("decisions", "add", "-i", str(ip), "-d", args[2], "-R", c["BAN_REASON"])
+        else:
+            sys.exit("bad arguments")
+    else:
+        sys.exit("usage: csctl list | ban <ip> <1h|4h|24h|168h> | unban <ip>")
+    out({"ok": rc == 0, "out": txt[-2000:]})
+    sys.exit(0 if rc == 0 else 1)
+
+
+# --- images -----------------------------------------------------------------------------------------------------
+
+def images(args, c):
+    r = subprocess.run(["docker", "ps", "--format", "{{.Image}}"], capture_output=True, text=True, timeout=30)
+    if r.returncode:
+        sys.exit(r.stderr.strip()[-300:] or "docker ps failed")
+    for name in sorted(set(r.stdout.split())):
+        d = subprocess.run(["docker", "image", "inspect", "-f", "{{range .RepoDigests}}{{.}} {{end}}", name],
+                           capture_output=True, text=True, timeout=30)
+        digest = (d.stdout.split() or [""])[0]
+        print(f"{name}\t{digest or name}")
+
+
+# --- waf --------------------------------------------------------------------------------------------------------
+
+WAFCTL = "/usr/local/sbin/logwatch-wafctl"
+
+
+def waf(args, c):
+    """Hands over to logwatch-wafctl (validates everything itself; stdin passes through)."""
+    if not args or args[0] not in ("apply", "status", "hits", "rollback", "capi") or len(args) > 2:
+        sys.exit("usage: waf apply | status | hits [hours] | rollback | capi")
+    if not os.path.exists(WAFCTL):
+        sys.exit(f"{WAFCTL} is not installed (install-agent.sh --roles ...,waf)")
+    os.execv(WAFCTL, [WAFCTL, " ".join(args)])
+
+
+NFWAFCTL = "/usr/local/sbin/logwatch-nfwafctl"
+
+
+def l4waf(args, c):
+    """Hands over to logwatch-nfwafctl (validates everything itself; stdin passes through)."""
+    if not args or args[0] not in ("apply", "confirm", "status", "hits", "rollback", "list", "clear") or len(args) > (3 if args[0] == "clear" else 2):
+        sys.exit("usage: l4waf apply | confirm <gen> | status | hits [hours] | rollback | list | clear <list> [ip]")
+    if not os.path.exists(NFWAFCTL):
+        sys.exit(f"{NFWAFCTL} is not installed (install-agent.sh --roles ...,l4waf)")
+    os.execve(NFWAFCTL, [NFWAFCTL, " ".join(args)], dict(os.environ, LWNF_WAN=c.get("L4_WAN") or "eth0"))
+
+
+# --- hello (installer / check-host) ------------------------------------------------------------------------------
+
+def hello(args, c):
+    import shutil
+    have = lambda x: bool(shutil.which(x))
+    out({"agent": 1, "host": os.uname().nodename, "roles": sorted({r.strip() for r in c["ROLES"].split(",") if r.strip()}),
+         "tools": {"journalctl": have("journalctl"), "cscli": have("cscli"), "docker": have("docker"), "nft": have("nft"),
+                   "wafctl": os.path.exists(WAFCTL), "nfwafctl": os.path.exists(NFWAFCTL)},
+         "traffic_files": len({p for g in c["TRAFFIC_GLOBS"].split(",") if g.strip() for p in glob.glob(g.strip())}),
+         "events_file": os.path.exists(c["EVENTS"])})
+
+
+ROLES = {"hello": hello, "logpull": logpull, "trafficpull": trafficpull, "csctl": csctl, "images": images, "waf": waf, "l4waf": l4waf}
+
+
+def main():
+    words = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("SSH_ORIGINAL_COMMAND") or "").split()
+    c = conf()
+    allowed = {r.strip() for r in c["ROLES"].split(",") if r.strip()}
+    if not words or words[0] not in ROLES:
+        sys.exit("not allowed")
+    if words[0] not in allowed and words[0] != "hello":
+        sys.exit(f"role {words[0]} is not enabled in {CONF}")
+    ROLES[words[0]](words[1:], c)
+
+
+if __name__ == "__main__":
+    main()

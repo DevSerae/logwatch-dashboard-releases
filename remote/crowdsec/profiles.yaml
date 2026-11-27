@@ -1,0 +1,29 @@
+# Logwatch Dashboard profiles: bans escalate 4h, 8h, 12h ... per repeat; every alert (incl. WAF blocks without a ban) goes to lw_events → the board
+name: default_ip_remediation
+filters:
+ - Alert.Remediation == true && Alert.GetScope() == "Ip"
+decisions:
+ - type: ban
+   duration: 4h
+duration_expr: Sprintf('%dh', (GetDecisionsCount(Alert.GetValue()) + 1) * 4)
+notifications:
+  - lw_events
+on_success: break
+---
+name: default_range_remediation
+filters:
+ - Alert.Remediation == true && Alert.GetScope() == "Range"
+decisions:
+ - type: ban
+   duration: 4h
+duration_expr: Sprintf('%dh', (GetDecisionsCount(Alert.GetValue()) + 1) * 4)
+notifications:
+  - lw_events
+on_success: break
+---
+name: lw_events_only
+filters:
+ - Alert.Remediation == false
+notifications:
+  - lw_events
+on_success: break

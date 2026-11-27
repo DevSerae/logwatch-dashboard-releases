@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Resolve with AI · {{ title }}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%239085e9'/%3E%3C/svg%3E">
+<style>
+  body { margin:0; background:#0f1115; color:#e4e7eb; font:14px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .c { max-width:860px; margin:0 auto; padding:28px 20px 60px; }
+  .hd { display:flex; align-items:center; gap:12px; } h1 { font-size:17px; font-weight:600; margin:0; flex:1; }
+  p { color:#98a0aa; margin:6px 0; line-height:1.5; } a { color:#9085e9; } code, pre { font:12px ui-monospace, monospace; }
+  .sp { width:18px; height:18px; flex:none; border-radius:50%; border:3px solid rgba(144,133,233,.25); border-top-color:#9085e9; animation:r .9s linear infinite; }
+  @keyframes r { to { transform:rotate(360deg); } } .w { color:#fab005; } .ok { color:#51cf66; } .bad { color:#ff6b6b; }
+  .btn { padding:5px 10px; border:1px solid #2e333d; border-radius:6px; color:#e4e7eb; text-decoration:none; font-size:13px; }
+  .btn:hover { border-color:#9085e9; }
+  .sum { background:#171a21; border:1px solid #262a33; border-left:3px solid #9085e9; border-radius:8px; padding:12px 14px; margin:16px 0; white-space:pre-wrap; line-height:1.5; }
+  .step { border-left:2px solid #262a33; padding:4px 0 4px 12px; margin:8px 0; }
+  .step.text { white-space:pre-wrap; line-height:1.5; }
+  .step.tool { border-left-color:#9085e9; } .step.tool b { font-weight:600; } .step.tool .d { color:#98a0aa; }
+  details pre { background:#0b0d10; border:1px solid #262a33; border-radius:6px; padding:8px; overflow:auto; max-height:320px; white-space:pre-wrap; margin:6px 0 0; }
+  summary { cursor:pointer; color:#98a0aa; font-size:12px; } .er pre { border-color:#5c2b2b; }
+</style></head>
+<body><div class="c">
+<div class="hd"><div class="sp" id="sp"></div><h1 id="h">Waiting for {{ agent }}…</h1>
+{% if chat %}<a class="btn" href="{{ chat }}" target="_blank" rel="noopener">Open chat ↗</a>{% endif %}<a class="btn" href="/">Board</a></div>
+<p id="p">The runner picks this up within ~10 s. This page shows the transcript live.</p>
+<p><code>{{ rid }}</code></p>
+<div id="sum"></div><div id="log"></div>
+</div>
+<script>
+(() => {
+  const $ = id => document.getElementById(id), esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+  const agent = {{ agent|tojson }}, OUT = {fixed: ["Fixed, check it", "ok"], not_fixed: ["Couldn't fix it", "bad"], unknown: ["Finished", ""]};
+  let n = 0, last = "";
+  const big = s => typeof s === "string" ? s : JSON.stringify(s, null, 2);
+  function step(s) {
+    if (s.t === "tool") return `<div class="step tool"><b>${esc(s.name)}</b> <span class="d">${esc(s.desc || "")}</span>
+      ${s.input ? `<details><summary>input</summary><pre>${esc(big(s.input))}</pre></details>` : ""}
+      ${s.out ? `<details class="${s.err ? "er" : ""}"><summary>${s.err ? "error" : "output"}</summary><pre>${esc(big(s.out))}</pre></details>` : ""}</div>`;
+    return `<div class="step text">${esc(s.text)}</div>`;
+  }
+  async function poll() {
+    n++;
+    let done = false;
+    try {
+      const r = await fetch("/api/ai/{{ rid }}", {cache: "no-store"}); if (!r.ok) throw new Error(r.status);
+      const d = await r.json(), h = $("h"), p = $("p");
+      p.className = "";
+      if (d.state === "queued") {
+        h.textContent = `Waiting for ${agent}…`;
+        if (!d.runner_ok) { h.textContent = "The AI runner isn't running"; p.className = "w";
+          p.innerHTML = "The run is queued and starts as soon as a runner checks in. See <code>ai-runner/README.md</code> to start it."; }
+        else if (d.runner_old) { h.textContent = "The AI runner needs an update"; p.className = "w";
+          p.innerHTML = "This is a combined bulk run, and the runner is too old for those (it would start one session per item). Replace its <code>runner.py</code> with the board's <code>ai-runner/runner.py</code> and restart it; the run starts then."; }
+      } else if (d.state === "running") { h.textContent = `${agent} is working on it…`; p.textContent = "Live transcript below."; }
+      else {
+        done = true; $("sp").remove();
+        const [t, c] = d.state === "failed" ? ["Run failed", "bad"] : OUT[d.outcome] || OUT.unknown;
+        h.innerHTML = `<span class="${c}">${esc(t)}</span>`;
+        p.textContent = "The item stays on the board until you press Resolve.";
+        $("sum").innerHTML = (d.summary ? `<div class="sum">${esc(d.summary)}</div>` : "") + (d.err ? `<p class="bad">${esc(d.err)}</p>` : "");
+      }
+      const html = (d.log || []).map(step).join("");
+      if (html !== last) { $("log").innerHTML = html; last = html; }
+    } catch (e) { $("p").textContent = "Can't reach the board (" + e.message + "). Retrying…"; }
+    if (!done) setTimeout(poll, n < 40 ? 1500 : 4000);
+  }
+  poll();
+})();
+</script></body></html>

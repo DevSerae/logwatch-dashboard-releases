@@ -1,0 +1,771 @@
+#!/usr/bin/env python3
+"""Forced command for the Logwatch board's Edge WAF (role waf of logwatch-remote) (/usr/local/sbin/logwatch-wafctl).
+
+SSH_ORIGINAL_COMMAND: "apply" (desired ruleset as JSON on stdin) | "status" | "hits [hours]" | "rollback".
+Nothing else runs. The board never sends rule text: every field is checked against an allow-list here and
+the CrowdSec AppSec files are rendered locally. Each apply snapshots the managed files first, runs the
+CrowdSec config test, reloads and health-checks the AppSec listener, and restores the snapshot on any failure.
+
+Managed state (nothing else is touched):
+  appsec-rules/lw-waf-*.yaml, appsec-rules/lw-crs-*.yaml, appsec-configs/lw-waf.yaml, appsec-configs/lw-crs.yaml,
+  the appsec_configs list in the AppSec acquisition file, CrowdSec decisions whose reason starts "lw-waf:" or "lw-list:",
+  (v2) scenarios/lw-rl-*.yaml (rate limits and response rules: leaky buckets on the proxy's access log) and the block
+  between "# lw-waf managed begin/end" at the top of profiles.yaml (one profile per ban duration those scenarios use).
+Paths come from LWWAF_* env vars for the local test rig; sudo strips env, so production uses the defaults.
+"""
+import fcntl
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tarfile
+import time
+
+VERSION = 2
+ROOT = os.environ.get("LWWAF_ROOT", "/etc/crowdsec")
+
+
+def _acquis():
+    """The AppSec acquisition file: LWWAF_ACQUIS, logwatch-appsec.yaml, or the one existing `source: appsec` file in
+    acquis.d (CrowdSec set up before Logwatch, under another name)."""
+    if os.environ.get("LWWAF_ACQUIS"):
+        return os.environ["LWWAF_ACQUIS"]
+    d = os.path.join(os.environ.get("LWWAF_ROOT", "/etc/crowdsec"), "acquis.d")
+    own = os.path.join(d, "logwatch-appsec.yaml")
+    if os.path.exists(own):
+        return own
+    try:
+        found = [os.path.join(d, f) for f in sorted(os.listdir(d)) if f.endswith((".yaml", ".yml"))
+                 and re.search(r"^source:\s*appsec\s*$", open(os.path.join(d, f)).read(), re.M)]
+    except OSError:
+        found = []
+    return found[0] if len(found) == 1 else own
+
+
+ACQUIS = _acquis()
+CSCLI = os.environ.get("LWWAF_CSCLI", "cscli").split()
+TEST = os.environ.get("LWWAF_TEST", "crowdsec -c /etc/crowdsec/config.yaml -t").split()
+RELOAD = os.environ.get("LWWAF_RELOAD", "systemctl reload crowdsec").split()
+STATE = os.environ.get("LWWAF_STATE", "/var/lib/logwatch-wafctl")
+
+RULES_DIR = os.path.join(ROOT, "appsec-rules")
+CONF_DIR = os.path.join(ROOT, "appsec-configs")
+SCEN_DIR = os.path.join(ROOT, "scenarios")
+PROFILES = os.path.join(ROOT, "profiles.yaml")
+PBEGIN, PEND = "# lw-waf managed begin", "# lw-waf managed end"
+KEEP_GENERATIONS = 10
+MAX_PAYLOAD = 16 * 1024 * 1024
+MAX_RULES = 200
+MAX_BANS = 5000
+MAX_SCEN = 50
+MAX_LISTS = 30
+MAX_LIST_ITEMS = 200000
+LIST_DUR = "25h"            # list decisions outlive a day without the board; every apply after 12 h renews them
+RL_DURS = ("10m", "1h", "4h", "24h", "168h")
+
+ZONES = {"URI", "URI_FULL", "ARGS", "ARGS_GET", "ARGS_POST", "ARGS_NAMES", "BODY_ARGS", "BODY_ARGS_NAMES", "HEADERS",
+         "HEADERS_NAMES", "COOKIES", "COOKIES_NAMES", "METHOD", "FILENAMES", "FILES", "FILES_NAMES", "FILES_TOTAL_SIZE",
+         "RAW_BODY", "PROTOCOL"}
+VAR_ZONES = {"ARGS", "ARGS_GET", "ARGS_POST", "BODY_ARGS", "HEADERS", "COOKIES"}
+NUM_OPS = {"gt", "lt", "gte", "lte", "eq"}
+OPS = {"contains", "equals", "startsWith", "endsWith", "regex", "libinjectionSQL", "libinjectionXSS"} | NUM_OPS
+MEASURES = {"length", "count"}      # numeric ops: compare the value's length, or how many there are (0 = missing)
+METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT", "PROPFIND", "PROPPATCH",
+           "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "SEARCH", "DEBUG", "TRACK", "REPORT", "MERGE"}
+DURATIONS = {"1h": "1h", "4h": "4h", "24h": "24h", "168h": "168h", "720h": "720h", "permanent": "87600h"}
+# RE2 (Go) has no lookaround/backreferences; refuse them here so a bad pattern never reaches the config test.
+RE2_BAD = re.compile(r"\(\?[=!<]|\\[1-9]|\(\?P=|\(\?>")
+HOST_RE = re.compile(r"^(?=.{1,253}$)(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+VAR_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+CRS_ID_PL, CRS_ID_LOG = 9000101, 9000110
+
+
+class Bad(Exception):
+    pass
+
+
+SAFE_LIT = re.compile(r'[^"\\]*')
+SAFE_DESC = re.compile(r"[^A-Za-z0-9 .,:;/_()+=@#&-]")
+
+
+def text(v, n, what):
+    if not isinstance(v, str):
+        raise Bad(f"{what}: not a string")
+    v = "".join(c for c in v if c.isprintable())
+    if not v or len(v) > n:
+        raise Bad(f"{what}: empty or longer than {n}")
+    return v
+
+
+def check_cond(c, rid):
+    if not isinstance(c, dict):
+        raise Bad(f"rule {rid}: bad condition")
+    zone, op = c.get("zone"), c.get("op")
+    if zone not in ZONES:
+        raise Bad(f"rule {rid}: zone {zone!r} not allowed")
+    if op not in OPS:
+        raise Bad(f"rule {rid}: op {op!r} not allowed")
+    out = {"zones": [zone]}
+    var = c.get("var")
+    if var:
+        if zone not in VAR_ZONES or not VAR_RE.match(str(var)):
+            raise Bad(f"rule {rid}: bad variable {var!r}")
+        out["variables"] = [var.lower() if zone == "HEADERS" else var]
+    if op.startswith("libinjection"):
+        out["match"] = {"type": op}  # libinjection decodes itself; hub rules give no value/transform
+        return out
+    ms = c.get("measure") or ""
+    if op in NUM_OPS:
+        v = c.get("value")
+        if isinstance(v, str) and v.strip().isdigit():
+            v = int(v.strip())
+        if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= 10 ** 9:
+            raise Bad(f"rule {rid}: {op} needs a whole number 0-1000000000")
+        if ms and ms not in MEASURES:
+            raise Bad(f"rule {rid}: measure length|count")
+        if not ms and zone != "FILES_TOTAL_SIZE":
+            raise Bad(f"rule {rid}: {op} compares a length or a count: pick one (only the total upload size is a number itself)")
+        if ms == "count" and zone in ("URI", "URI_FULL", "METHOD", "PROTOCOL", "RAW_BODY", "FILES_TOTAL_SIZE"):
+            raise Bad(f"rule {rid}: {zone} is a single value: count works on headers, cookies, arguments and files")
+        out["transform"] = [ms] if ms else []
+        out["match"] = {"type": op, "value": str(v)}
+        return out
+    if ms:
+        raise Bad(f"rule {rid}: length/count go with gt, lt, gte, lte or eq")
+    val = text(c.get("value"), 512, f"rule {rid} value")
+    if op == "regex":
+        if RE2_BAD.search(val):
+            raise Bad(f"rule {rid}: lookarounds/backreferences are not supported (RE2)")
+        try:
+            re.compile(val)
+        except re.error as e:
+            raise Bad(f"rule {rid}: bad regex: {e}")
+    case = bool(c.get("case"))
+    out["transform"] = ["urldecode"] if case else ["lowercase", "urldecode"]
+    if zone == "METHOD":
+        val = val.upper()
+        alt = re.fullmatch(r"\^\(([A-Z|]+)\)\$", val) if op == "regex" else None  # ^(PUT|DELETE)$ = any of these
+        if not all(m in METHODS for m in (alt.group(1).split("|") if alt else [val])) or (op == "regex" and not alt):
+            raise Bad(f"rule {rid}: unknown method {val}")
+        out["transform"] = []
+    elif not case and op != "regex":
+        val = val.lower()
+    if op == "regex":
+        val = val.replace('"', r"\x22")
+        if val.endswith("\\"):
+            raise Bad(f"rule {rid}: regex may not end in a backslash")
+    elif not SAFE_LIT.fullmatch(val):
+        # CrowdSec pastes values into SecLang "..." unescaped: carry quotes/backslashes as \xHH regex
+        esc = "".join(ch if ch.isalnum() or ch in " _-/" else "".join(f"\\x{b:02x}" for b in ch.encode()) for ch in val)
+        val = {"contains": esc, "equals": f"^{esc}$", "startsWith": f"^{esc}", "endsWith": f"{esc}$"}[op]
+        op = "regex"
+    out["match"] = {"type": op, "value": val}
+    return out
+
+
+def check_rule(r):
+    if not isinstance(r, dict):
+        raise Bad("bad rule")
+    rid = r.get("id")
+    if not isinstance(rid, int) or not 1 <= rid <= 999999:
+        raise Bad(f"bad rule id {rid!r}")
+    mode = r.get("mode")
+    if mode not in ("log", "enforce"):
+        raise Bad(f"rule {rid}: mode must be log or enforce")
+    desc = SAFE_DESC.sub(" ", text(r.get("desc") or f"rule {rid}", 120, f"rule {rid} desc")).strip() or f"rule {rid}"
+    conds = r.get("match")
+    if not isinstance(conds, list) or not 1 <= len(conds) <= 8:
+        raise Bad(f"rule {rid}: 1-8 conditions")
+    parts = [check_cond(c, rid) for c in conds]
+    hosts = r.get("hosts") or []
+    if not isinstance(hosts, list) or len(hosts) > 10:
+        raise Bad(f"rule {rid}: up to 10 hosts")
+    hosts = [str(h).lower().strip() for h in hosts]
+    for h in hosts:
+        if not HOST_RE.match(h):
+            raise Bad(f"rule {rid}: bad host {h!r}")
+    if hosts:
+        hp = []
+        for h in hosts:
+            if h.startswith("*."):
+                hp.append({"zones": ["HEADERS"], "variables": ["host"], "transform": ["lowercase"],
+                           "match": {"type": "endsWith", "value": h[1:]}})
+            else:
+                hp.append({"zones": ["HEADERS"], "variables": ["host"], "transform": ["lowercase"],
+                           "match": {"type": "equals", "value": h}})
+        parts.append({"or": hp})
+    name = f"lw/waf-log-{rid}" if mode == "log" else f"lw/waf-{rid}"
+    return rid, mode, {
+        "name": name, "description": f"Edge WAF: {desc}",
+        "rules": [{"and": parts}],
+        "labels": {"type": "exploit", "service": "http", "behavior": "http:exploit",
+                   "label": f"Edge WAF: {desc}", "confidence": 3, "spoofable": 0, "classification": ["lw-waf"]},
+    }
+
+
+def check_ban(b):
+    if not isinstance(b, dict):
+        raise Bad("bad ban")
+    bid = b.get("id")
+    if not isinstance(bid, int) or not 1 <= bid <= 999999:
+        raise Bad(f"bad ban id {bid!r}")
+    try:
+        net = ipaddress.ip_network(str(b.get("value", "")).strip(), strict=False)
+    except ValueError:
+        raise Bad(f"ban {bid}: not an IP/CIDR")
+    if net.is_private or net.is_loopback or net.is_reserved or net.is_multicast or net.is_unspecified \
+            or net.is_link_local:
+        raise Bad(f"ban {bid}: refusing a non-public range")
+    if (net.version == 4 and net.prefixlen < 16) or (net.version == 6 and net.prefixlen < 32):
+        raise Bad(f"ban {bid}: range too wide (min /16 IPv4, /32 IPv6)")
+    dur = DURATIONS.get(b.get("dur", "permanent"))
+    m = re.fullmatch(r"([1-9][0-9]{0,4})h", str(b.get("dur", "")))
+    if not dur and m and int(m.group(1)) <= 87600:
+        dur = m.group(0)  # remaining time of a board ban, e.g. "17h"
+    if not dur:
+        raise Bad(f"ban {bid}: bad duration")
+    return {"id": bid, "net": net, "dur": dur}
+
+
+RL_KEYS = {"ip": "evt.Meta.source_ip", "ip_path": "evt.Meta.source_ip + ' ' + evt.Meta.http_path",
+           "ip_host": "evt.Meta.source_ip + ' ' + evt.Meta.target_fqdn", "net": "IpToRange(evt.Meta.source_ip, '/24')",
+           "asn": "evt.Enriched.ASNNumber", "ua": "evt.Meta.source_ip + ' ' + evt.Meta.http_user_agent",
+           "host": "evt.Meta.target_fqdn"}
+
+
+def check_scen(x):
+    """Rate limit ("rate": requests) or response rule ("resp": responses with these statuses) as a leaky bucket on the
+    reverse proxy's access log: more than n in secs per key → alert (+ ban for `ban` when enforced)."""
+    if not isinstance(x, dict):
+        raise Bad("bad rate rule")
+    sid = x.get("id")
+    if not isinstance(sid, int) or not 1 <= sid <= 999999:
+        raise Bad(f"bad rate rule id {sid!r}")
+    kind, mode, key = x.get("kind"), x.get("mode"), x.get("key") or "ip"
+    if kind not in ("rate", "resp") or mode not in ("log", "enforce") or key not in RL_KEYS:
+        raise Bad(f"rate rule {sid}: kind rate|resp, mode log|enforce, key {'|'.join(RL_KEYS)}")
+    n, secs = x.get("n"), x.get("secs")
+    if not isinstance(n, int) or not 1 <= n <= 100000 or not isinstance(secs, int) or not 1 <= secs <= 3600:
+        raise Bad(f"rate rule {sid}: 1-100000 requests in 1-3600 s")
+    ban = x.get("ban") or "4h"
+    if ban not in RL_DURS:
+        raise Bad(f"rate rule {sid}: ban {'|'.join(RL_DURS)}")
+    desc = SAFE_DESC.sub(" ", text(x.get("desc") or f"rate rule {sid}", 120, f"rate rule {sid} desc")).strip() or f"rate rule {sid}"
+    f = ["evt.Meta.log_type == 'http_access-log'"]
+    hosts = [str(h).lower().strip() for h in x.get("hosts") or []]
+    if len(hosts) > 10 or not all(HOST_RE.match(h) for h in hosts):
+        raise Bad(f"rate rule {sid}: up to 10 hosts")
+    if hosts:
+        f.append("(" + " || ".join(f"evt.Meta.target_fqdn endsWith {json.dumps(h[1:])}" if h.startswith("*.")
+                                   else f"evt.Meta.target_fqdn == {json.dumps(h)}" for h in hosts) + ")")
+    paths = x.get("paths") or []
+    if not isinstance(paths, list) or len(paths) > 10 or not all(isinstance(q, str) and PATH_RE.match(q) for q in paths):
+        raise Bad(f"rate rule {sid}: up to 10 path prefixes like /login")
+    if paths:
+        f.append("(" + " || ".join(f"evt.Meta.http_path startsWith {json.dumps(q)}" for q in paths) + ")")
+    meth = [str(m).upper() for m in x.get("methods") or []]
+    if not all(m in METHODS for m in meth):
+        raise Bad(f"rate rule {sid}: unknown method")
+    if meth:
+        f.append(f"evt.Meta.http_verb in {json.dumps(sorted(set(meth)))}")
+    st = x.get("statuses") or []
+    if not isinstance(st, list) or len(st) > 20 or not all(isinstance(c, int) and 100 <= c <= 599 for c in st):
+        raise Bad(f"rate rule {sid}: statuses 100-599")
+    if kind == "resp" and not st:
+        raise Bad(f"rate rule {sid}: a response rule needs the statuses it counts (e.g. 404, 401)")
+    if st:
+        f.append(f"evt.Meta.http_status in {json.dumps([str(c) for c in sorted(set(st))])}")
+    name = f"lw/rl-log-{sid}" if mode == "log" else f"lw/rl-{sid}-{ban}"
+    ms = max(1, secs * 1000 // n)
+    doc = {"type": "leaky", "name": name, "description": f"Edge WAF rate rule: {desc}", "filter": " && ".join(f),
+           "groupby": RL_KEYS[key], "distinct": "", "capacity": n, "leakspeed": f"{ms}ms", "blackhole": "1m",
+           "labels": {"service": "http", "behavior": "http:scan" if kind == "resp" else "http:dos", "confidence": 2,
+                      "spoofable": 0, "label": f"Edge WAF rate rule: {desc}", "classification": ["lw-waf"],
+                      "remediation": mode == "enforce"}}
+    if key == "net":
+        doc["scope"] = {"type": "Range", "expression": "IpToRange(evt.Meta.source_ip, '/24')"}
+    if not doc["distinct"]:
+        del doc["distinct"]
+    return {"id": sid, "mode": mode, "ban": ban, "doc": doc}
+
+
+def check_list(x):
+    """A board list (threat feed, address list) as CrowdSec ban decisions on this node: reason lw-list:<id>."""
+    if not isinstance(x, dict) or not isinstance(x.get("id"), int) or not 1 <= x["id"] <= 999999:
+        raise Bad("bad list")
+    vals = x.get("values")
+    if not isinstance(vals, list) or len(vals) > MAX_LIST_ITEMS:
+        raise Bad(f"list {x['id']}: up to {MAX_LIST_ITEMS} addresses")
+    ips, nets_ = set(), set()
+    for v in vals:
+        try:
+            n = ipaddress.ip_network(str(v).strip(), strict=False)
+        except ValueError:
+            continue                                   # feeds have the odd junk line; skip it
+        if not n.is_global or (n.version == 4 and n.prefixlen < 8) or (n.version == 6 and n.prefixlen < 19):
+            continue
+        (ips if n.num_addresses == 1 else nets_).add(str(n.network_address) if n.num_addresses == 1 else str(n))
+    return {"id": x["id"], "ips": sorted(ips), "nets": sorted(nets_),
+            "digest": hashlib.sha256(json.dumps([sorted(ips), sorted(nets_)]).encode()).hexdigest()[:16]}
+
+
+def check_payload(p):
+    if not isinstance(p, dict):
+        raise Bad("payload must be an object")
+    rules = p.get("rules") or []
+    bans = p.get("bans") or []
+    if len(rules) > MAX_RULES or len(bans) > MAX_BANS:
+        raise Bad("too many rules/bans")
+    scen, lists = p.get("scenarios") or [], p.get("lists") or []
+    if not isinstance(scen, list) or len(scen) > MAX_SCEN or not isinstance(lists, list) or len(lists) > MAX_LISTS:
+        raise Bad(f"up to {MAX_SCEN} rate rules and {MAX_LISTS} lists")
+    out = {"rules": [check_rule(r) for r in rules], "bans": [check_ban(b) for b in bans], "crs": None,
+           "scen": [check_scen(x) for x in scen], "lists": [check_list(x) for x in lists]}
+    if len({x["id"] for x in out["scen"]}) != len(out["scen"]) or len({x["id"] for x in out["lists"]}) != len(out["lists"]):
+        raise Bad("duplicate ids")
+    if len({r[0] for r in out["rules"]}) != len(out["rules"]) or len({b["id"] for b in out["bans"]}) != len(out["bans"]):
+        raise Bad("duplicate ids")
+    crs = p.get("crs")
+    if crs:
+        mode, pl = crs.get("mode"), crs.get("pl")
+        if mode not in ("log", "enforce") or pl not in (1, 2, 3, 4):
+            raise Bad("crs: mode log|enforce, pl 1-4")
+        out["crs"] = {"mode": mode, "pl": pl, "exclusions": [check_excl(x) for x in (crs.get("exclusions") or [])[:20]]}
+    return out
+
+
+PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]{0,128}$")
+
+
+def check_excl(x):
+    """CRS off for (host + path prefix [+ credential present]), e.g. logged-in panel admin pages."""
+    if not isinstance(x, dict):
+        raise Bad("crs exclusion must be an object")
+    host = str(x.get("host") or "").lower()
+    if not HOST_RE.match(host) or host.startswith("*."):
+        raise Bad(f"crs exclusion: bad host {host!r}")
+    paths = x.get("paths") or []
+    if not isinstance(paths, list) or not 1 <= len(paths) <= 10 or not all(isinstance(q, str) and PATH_RE.match(q) for q in paths):
+        raise Bad("crs exclusion: 1-10 path prefixes like /admin/")
+    auth = x.get("auth") or []
+    if not isinstance(auth, list) or len(auth) > 5:
+        raise Bad("crs exclusion: auth must be a list")
+    for a in auth:
+        if a != "bearer" and not (isinstance(a, str) and a.startswith("cookie:") and VAR_RE.match(a[7:])):
+            raise Bad(f"crs exclusion: auth {a!r} must be bearer or cookie:<name>")
+    return {"host": host, "paths": paths, "auth": auth}
+
+
+def excl_filter(x):
+    q = json.dumps
+    f = f"req.Host == {q(x['host'])} && (" + " || ".join(f"req.URL.Path startsWith {q(p)}" for p in x["paths"]) + ")"
+    if x["auth"]:
+        f += " && (" + " || ".join('req.Header.Get("Authorization") startsWith "Bearer "' if a == "bearer"
+                                   else f'req.Header.Get("Cookie") contains {q(a[7:] + "=")}' for a in x["auth"]) + ")"
+    return f
+
+
+def render(v):
+    """Return {path: content} for every managed file (content None = delete) plus the acquis config list."""
+    files = {}
+    enforce = [d["name"] for rid, m, d in v["rules"] if m == "enforce"]
+    log = [d["name"] for rid, m, d in v["rules"] if m == "log"]
+    for rid, m, d in v["rules"]:
+        files[os.path.join(RULES_DIR, f"lw-waf-{rid}.yaml")] = json.dumps(d, indent=1) + "\n"
+    if enforce or log:
+        files[os.path.join(CONF_DIR, "lw-waf.yaml")] = json.dumps({
+            "name": "lw/waf",
+            "inband_rules": enforce + log,
+            # log rules: let the request through, drop the event so no ban scenario counts it, keep an alert
+            "on_match": [{"filter": 'IsInBand && len(evt.Appsec.MatchedRules) > 0 && all(evt.Appsec.MatchedRules, '
+                                    '{.name startsWith "lw/waf-log-"})',
+                          "apply": ["SetRemediation(\"allow\")", "CancelEvent()", "SendAlert()"]}],
+        }, indent=1) + "\n"
+    crs = v["crs"]
+    if crs:
+        block = crs["pl"] if crs["mode"] == "enforce" else 1
+        files[os.path.join(RULES_DIR, "lw-crs-pl.yaml")] = json.dumps({
+            "name": "lw/crs-pl",
+            "seclang_rules": [f'SecAction "id:{CRS_ID_PL},phase:1,pass,nolog,setvar:tx.blocking_paranoia_level={block},'
+                              f'setvar:tx.detection_paranoia_level={crs["pl"]}"']}, indent=1) + "\n"
+        files[os.path.join(RULES_DIR, "lw-crs-logpl.yaml")] = json.dumps({
+            "name": "lw/crs-logpl",
+            "seclang_rules": [f'SecRule TX:DETECTION_INBOUND_ANOMALY_SCORE "@ge 5" "id:{CRS_ID_LOG},phase:2,deny,log,'
+                              f"msg:'CRS log-mode',logdata:'detection anomaly %{{tx.detection_inbound_anomaly_score}}',"
+                              f"tag:'lw-crs-log'\""]}, indent=1) + "\n"
+        cfg = {"name": "lw/crs", "default_remediation": "ban",
+               "on_match": [{"filter": f"IsOutBand && len(evt.Appsec.MatchedRules.ByID({CRS_ID_LOG})) > 0 && "
+                                       "len(evt.Appsec.MatchedRules.ByID(949110)) == 0",
+                             "apply": ["SetRemediation(\"allow\")", "CancelEvent()", "SendAlert()"]},
+                            {"filter": "IsOutBand == true", "apply": ["SendAlert()"]}]}
+        if crs["exclusions"]:
+            cfg["pre_eval"] = [{"filter": excl_filter(x), "apply": ['RemoveInBandRuleByTag("OWASP_CRS")', 'RemoveOutBandRuleByTag("OWASP_CRS")']}
+                               for x in crs["exclusions"]]
+        if crs["mode"] == "enforce":
+            # blocking CRS in-band at the chosen level; the log marker keeps reporting anything above it (none)
+            cfg["inband_rules"] = ["lw/crs-pl", "crowdsecurity/crs"]
+            cfg["on_match"].insert(0, {"filter": "IsInBand == true", "apply": ["SendAlert()"]})
+        else:
+            cfg["outofband_rules"] = ["lw/crs-pl", "crowdsecurity/crs", "lw/crs-logpl"]
+        files[os.path.join(CONF_DIR, "lw-crs.yaml")] = json.dumps(cfg, indent=1) + "\n"
+    for x in v.get("scen", []):
+        files[os.path.join(SCEN_DIR, f"lw-rl-{x['id']}.yaml")] = json.dumps(x["doc"], indent=1) + "\n"
+    for d in (RULES_DIR, CONF_DIR, SCEN_DIR):
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            p = os.path.join(d, f)
+            if (f.startswith("lw-waf-") or f.startswith("lw-crs") or f == "lw-waf.yaml" or (d == SCEN_DIR and f.startswith("lw-rl-"))) \
+                    and p not in files and not os.path.islink(p):
+                files[p] = None
+    if os.path.exists(PROFILES):
+        files[PROFILES] = profiles(open(PROFILES).read(), v)
+    return files
+
+
+def profiles(text_, v):
+    """profiles.yaml with our block on top: one profile per ban duration the enforced rate rules use (they'd get the
+    default duration otherwise). Their notifications are the ones the first existing profile sends to."""
+    if PBEGIN in text_:
+        a, b = text_.index(PBEGIN), text_.find(PEND)
+        if b < 0:
+            raise Bad("profiles.yaml: managed block has no end marker")
+        rest = text_[:a] + text_[b + len(PEND):].lstrip("\n").removeprefix("---\n")
+    else:
+        rest = text_
+    durs = sorted({x["ban"] for x in v.get("scen", []) if x["mode"] == "enforce"}, key=RL_DURS.index)
+    if not durs:
+        return rest
+    notif = []
+    m = re.search(r"^notifications:\s*\n((?:\s+-\s*\S+\s*\n)+)", rest, re.M)
+    if m:
+        notif = re.findall(r"-\s*(\S+)", m.group(1))
+    blk = [PBEGIN]
+    for d in durs:
+        blk += [f"name: lw_rl_{d}", "filters:",
+                f' - Alert.Remediation == true && Alert.GetScenario() startsWith "lw/rl-" && Alert.GetScenario() endsWith "-{d}"',
+                "decisions:", " - type: ban", f"   duration: {d}"]
+        if notif:
+            blk += ["notifications:"] + [f"  - {n}" for n in notif]
+        blk += ["on_success: break", "---"]
+    blk.append(PEND)
+    return "\n".join(blk) + "\n" + rest
+
+
+def acquis_configs(text_, v):
+    """Rewrite only the appsec_configs list of the acquisition YAML (kept line-based: no YAML lib needed)."""
+    lines = text_.splitlines()
+    try:
+        i = next(n for n, l in enumerate(lines) if l.strip() == "appsec_configs:")
+    except StopIteration:
+        raise Bad("acquisition file has no appsec_configs list")
+    j = i + 1
+    items = []
+    while j < len(lines) and lines[j].lstrip().startswith("- "):
+        items.append(lines[j].strip()[2:].strip())
+        j += 1
+    base = [x for x in items if x not in ("lw/waf", "lw/crs", "crowdsecurity/crs")]
+    want = []
+    for x in base:
+        want.append(x)
+        if x == "crowdsecurity/appsec-default":
+            want.append("lw/crs" if v["crs"] else "crowdsecurity/crs")
+    if "lw/crs" not in want and "crowdsecurity/crs" not in want:
+        want.insert(0, "lw/crs" if v["crs"] else "crowdsecurity/crs")
+    if v["rules"]:
+        want.append("lw/waf")
+    return "\n".join(lines[:i + 1] + [f"  - {x}" for x in want] + lines[j:]) + "\n"
+
+
+def run(cmd, timeout=60):
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+def listen_addr():
+    m = re.search(r"^listen_addr:\s*([0-9.]+):(\d+)", open(ACQUIS).read(), re.M)
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def healthy(wait=40):
+    addr = listen_addr()
+    end = time.time() + wait
+    time.sleep(2)
+    while time.time() < end:
+        try:
+            with socket.create_connection(addr, timeout=2):
+                return True
+        except OSError:
+            time.sleep(1)
+    return False
+
+
+def managed_paths():
+    out = [ACQUIS] + ([PROFILES] if os.path.exists(PROFILES) else [])
+    for d in (RULES_DIR, CONF_DIR, SCEN_DIR):
+        if os.path.isdir(d):
+            out += [os.path.join(d, f) for f in os.listdir(d)
+                    if (f.startswith("lw-waf") or f.startswith("lw-crs") or f.startswith("lw-rl-")) and not os.path.islink(os.path.join(d, f))]
+    return out
+
+
+def snapshot():
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    path = os.path.join(STATE, f"gen-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.tar")
+    with tarfile.open(path, "w") as t:
+        for p in managed_paths():
+            t.add(p, arcname=p.lstrip("/"))
+    gens = sorted(f for f in os.listdir(STATE) if f.startswith("gen-"))
+    for f in gens[:-KEEP_GENERATIONS]:
+        os.unlink(os.path.join(STATE, f))
+    return path
+
+
+def restore(path):
+    for p in managed_paths():
+        if p not in (ACQUIS, PROFILES):
+            os.unlink(p)
+    with tarfile.open(path) as t:
+        for m in t.getmembers():
+            if not m.isfile():
+                continue
+            dest = "/" + m.name
+            if not (dest in (ACQUIS, PROFILES) or os.path.dirname(dest) in (RULES_DIR, CONF_DIR, SCEN_DIR)):
+                continue
+            with t.extractfile(m) as src, open(dest + ".lwnew", "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            os.replace(dest + ".lwnew", dest)
+
+
+def write_files(files, acq):
+    os.makedirs(SCEN_DIR, exist_ok=True)
+    for p, c in files.items():
+        if c is None:
+            os.unlink(p)
+        else:
+            with open(p + ".lwnew", "w") as f:
+                f.write(c)
+            os.chmod(p + ".lwnew", 0o644)
+            os.replace(p + ".lwnew", p)
+    with open(ACQUIS + ".lwnew", "w") as f:
+        f.write(acq)
+    os.chmod(ACQUIS + ".lwnew", 0o644)
+    os.replace(ACQUIS + ".lwnew", ACQUIS)
+
+
+def reconcile_bans(bans):
+    rc, out = run(CSCLI + ["decisions", "list", "-o", "json", "--origin", "cscli", "-l", "0"])
+    if rc != 0:
+        return {"ok": False, "err": out[-300:]}
+    have = {}
+    for a in json.loads(out or "null") or []:
+        for d in a.get("decisions") or []:
+            reason = d.get("scenario") or ""
+            if reason.startswith("lw-waf:"):
+                have.setdefault((reason, str(d.get("value"))), []).append(d["id"])
+    want = {}
+    for b in bans:
+        v = str(b["net"].network_address) if b["net"].num_addresses == 1 else str(b["net"])
+        want[(f"lw-waf:{b['id']}", v)] = b
+    added = removed = 0
+    errs = []
+    for key, ids in have.items():
+        if key not in want:
+            for i in ids:
+                rc, o = run(CSCLI + ["decisions", "delete", "--id", str(i)])
+                removed += rc == 0
+                if rc:
+                    errs.append(o[-120:])
+    for key, b in want.items():
+        if key not in have:
+            flag = "-i" if b["net"].num_addresses == 1 else "-r"
+            rc, o = run(CSCLI + ["decisions", "add", flag, key[1], "-d", b["dur"], "-R", key[0]])
+            added += rc == 0
+            if rc:
+                errs.append(o[-120:])
+    return {"ok": not errs, "added": added, "removed": removed, "kept": len(set(have) & set(want)), "errors": errs[:5]}
+
+
+def reconcile_lists(lists, st):
+    """Re-import a list when its contents changed or its decisions are over 12 h old; drop lists no longer sent."""
+    have, now, done, errs = st.get("lists") or {}, int(time.time()), {}, []
+    want = {str(x["id"]): x for x in lists}
+    for lid in list(have):
+        if lid not in want:
+            rc, o = run(CSCLI + ["decisions", "delete", "--scenario", f"lw-list:{lid}"])
+            if rc:
+                errs.append(o[-120:])
+    for lid, x in want.items():
+        h = have.get(lid) or {}
+        if h.get("digest") == x["digest"] and now - int(h.get("at") or 0) < 12 * 3600:
+            done[lid] = h
+            continue
+        run(CSCLI + ["decisions", "delete", "--scenario", f"lw-list:{lid}"])
+        ok = True
+        for vals, scope in ((x["ips"], "ip"), (x["nets"], "range")):
+            if not vals:
+                continue
+            tmp = os.path.join(STATE, f"list-{lid}-{scope}.txt")
+            with open(tmp, "w") as f:
+                f.write("\n".join(vals) + "\n")
+            rc, o = run(CSCLI + ["decisions", "import", "-i", tmp, "--format", "values", "--scope", scope, "--duration", LIST_DUR,
+                                 "--reason", f"lw-list:{lid}", "--type", "ban", "--batch", "2000"], 600)
+            os.unlink(tmp)
+            if rc:
+                ok = False
+                errs.append(o[-160:])
+        done[lid] = {"digest": x["digest"] if ok else "", "at": now if ok else 0, "n": len(x["ips"]) + len(x["nets"])}
+    return done, {"ok": not errs, "lists": len(done), "errors": errs[:5]}
+
+
+def apply(raw):
+    if len(raw) > MAX_PAYLOAD:
+        raise Bad("payload too large")
+    try:
+        p = json.loads(raw)
+    except ValueError:
+        raise Bad("payload is not JSON")
+    v = check_payload(p)
+    files = render(v)
+    acq = acquis_configs(open(ACQUIS).read(), v)
+    digest = hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest()[:16]
+    cur = {f: (open(f).read() if os.path.exists(f) else None) for f in files}
+    changed = any(cur[f] != c for f, c in files.items()) or open(ACQUIS).read() != acq
+    res = {"ok": True, "v": VERSION, "digest": digest, "rules": len(v["rules"]), "scenarios": len(v["scen"]), "crs": v["crs"], "changed": changed}
+    if changed:
+        snap = snapshot()
+        write_files(files, acq)
+        rc, out = run(TEST, 120)
+        if rc != 0:
+            restore(snap)
+            raise Bad("config test failed, previous rules restored: " + out[-400:])
+        rc, out = run(RELOAD, 120)
+        if rc != 0 or not healthy():
+            restore(snap)
+            run(RELOAD, 120)
+            raise Bad("reload/health check failed, previous rules restored: " + out[-300:])
+        res["snapshot"] = os.path.basename(snap)
+    res["bans"] = reconcile_bans(v["bans"])
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    sp = os.path.join(STATE, "state.json")
+    old = json.load(open(sp)) if os.path.exists(sp) else {}
+    lists, res["lists"] = reconcile_lists(v["lists"], old)
+    res["ok"] = res["bans"]["ok"] and res["lists"]["ok"]
+    with open(sp, "w") as f:
+        json.dump({"digest": digest, "applied": int(time.time()), "rules": len(v["rules"]), "scenarios": len(v["scen"]),
+                   "bans": len(v["bans"]), "crs": v["crs"], "lists": lists}, f)
+    return res
+
+
+def rollback():
+    gens = sorted(f for f in os.listdir(STATE) if f.startswith("gen-")) if os.path.isdir(STATE) else []
+    if not gens:
+        raise Bad("no snapshot to roll back to")
+    snap = os.path.join(STATE, gens[-1])
+    restore(snap)
+    rc, out = run(TEST, 120)
+    if rc != 0:
+        raise Bad("rolled-back config fails the test: " + out[-300:])
+    rc, out = run(RELOAD, 120)
+    ok = rc == 0 and healthy()
+    os.unlink(snap)
+    return {"ok": ok, "restored": gens[-1]}
+
+
+def hits(hours):
+    rc, out = run(CSCLI + ["alerts", "list", "-o", "json", "--since", f"{hours}h", "-l", "0"])
+    if rc != 0:
+        raise Bad(out[-300:])
+    count = {}
+    for a in json.loads(out or "null") or []:
+        names = {a.get("scenario") or ""}
+        for e in a.get("events") or []:
+            for m in e.get("meta") or []:
+                if m.get("key") == "rule_name" and m.get("value"):
+                    names.add(m["value"])
+        for n in names:
+            if n.startswith("lw/waf-"):
+                k = n
+            elif n.startswith("lw/rl-"):
+                k = "lw/rl-" + (n.split("-")[2] if n.startswith("lw/rl-log-") else n.split("-")[1])
+            elif n == f"native_rule:{CRS_ID_LOG}":
+                k = "lw/crs-log"
+            else:
+                continue
+            c = count.setdefault(k, {"hits": 0, "ips": set(), "last": ""})
+            c["hits"] += 1
+            c["ips"].add((a.get("source") or {}).get("ip") or "")
+            c["last"] = max(c["last"], a.get("created_at") or "")
+    return {"ok": True, "hours": hours,
+            "rules": {k: {"hits": c["hits"], "ips": len(c["ips"]), "last": c["last"]} for k, c in count.items()}}
+
+
+def status():
+    st = {}
+    p = os.path.join(STATE, "state.json")
+    if os.path.exists(p):
+        st = json.load(open(p))
+    gens = sorted(f for f in os.listdir(STATE) if f.startswith("gen-")) if os.path.isdir(STATE) else []
+    return {"ok": True, **st, "v": VERSION, "snapshots": len(gens),
+            "files": sorted(os.path.basename(x) for x in managed_paths() if x != ACQUIS)}
+
+
+def capi():
+    """The CrowdSec community blocklist this node got from CAPI (the board offers it as a threat feed for port proxies)."""
+    rc, out = run(CSCLI + ["decisions", "list", "-o", "json", "--origin", "CAPI", "-l", "0"], timeout=120)
+    if rc:
+        raise Bad("cscli: " + out[-200:])
+    vals = set()
+    for a in json.loads(out or "[]") or []:
+        for d in a.get("decisions") or []:
+            if (d.get("scope") or "").lower() in ("ip", "range") and d.get("type") == "ban":
+                vals.add(d.get("value"))
+    return {"ok": True, "values": sorted(v for v in vals if v)[:MAX_LIST_ITEMS]}
+
+
+def main():
+    argv = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("SSH_ORIGINAL_COMMAND") or "").split()
+    if not argv:
+        sys.exit("usage: apply | check | status | hits [hours] | rollback | capi")
+    if argv == ["check"]:  # validate only (the board runs this locally before pushing)
+        try:
+            p = json.loads(sys.stdin.read(MAX_PAYLOAD + 1) or "{}")
+            v = check_payload(p)
+            out = {"ok": True, "rules": len(v["rules"]), "bans": len(v["bans"]), "scenarios": len(v["scen"]), "lists": len(v["lists"])}
+            if p.get("preview"):   # the board's rule preview: the hub-format rules as they'd be written
+                out["docs"] = {str(rid): d for rid, m, d in v["rules"]}
+                out["scen"] = {str(x["id"]): x["doc"] for x in v["scen"]}
+        except (Bad, ValueError) as e:
+            out = {"ok": False, "err": str(e)}
+        print(json.dumps(out))
+        sys.exit(0 if out["ok"] else 1)
+    os.makedirs(STATE, mode=0o700, exist_ok=True)
+    with open(os.path.join(STATE, ".lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            if argv == ["apply"]:
+                out = apply(sys.stdin.read(MAX_PAYLOAD + 1))
+            elif argv == ["status"]:
+                out = status()
+            elif argv[0] == "hits" and len(argv) <= 2:
+                h = int(argv[1]) if len(argv) == 2 and argv[1].isdigit() else 24
+                out = hits(min(max(h, 1), 720))
+            elif argv == ["rollback"]:
+                out = rollback()
+            elif argv == ["capi"]:
+                out = capi()
+            else:
+                raise Bad("not allowed")
+        except Bad as e:
+            out = {"ok": False, "err": str(e)}
+    print(json.dumps(out, default=str))
+    sys.exit(0 if out.get("ok") else 1)
+
+
+if __name__ == "__main__":
+    main()

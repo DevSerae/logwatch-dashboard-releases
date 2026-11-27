@@ -1,0 +1,18 @@
+# Logwatch Dashboard: one compact JSON line per CrowdSec alert. The board reads them as app_name "crowdsec-event":
+# syslog hosts forward the file with rsyslog imfile (90-logwatch-crowdsec.conf), pull hosts via logwatch-remote logpull.
+type: file
+name: lw_events
+log_level: info
+format: |
+  {{range . -}}
+  {{- $m := dict -}}{{- if .Events }}{{ range (index .Events 0).Meta }}{{ $_ := set $m .Key .Value }}{{ end }}{{ end -}}
+  {{- $d := "" }}{{ $dur := "" }}{{ range .Decisions }}{{ $d = .Type }}{{ $dur = .Duration }}{{ end -}}
+  {{ dict "ts" .StopAt "scenario" .Scenario "ip" .Source.IP "scope" .Source.Scope "value" .Source.Value "cn" .Source.Cn "as" .Source.AsName "msg" .Message "decision" $d "duration" $dur "events" .EventsCount "remediation" .Remediation "simulated" .Simulated "meta" $m | toJson }}
+  {{ end -}}
+log_path: "/var/log/crowdsec-lw-events.json"
+rotate:
+  enabled: true
+  max_size: 20
+  max_files: 3
+  max_age: 30
+  compress: false

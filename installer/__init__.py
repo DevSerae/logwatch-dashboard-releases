@@ -1,0 +1,1 @@
+"""Logwatch Dashboard installer."""

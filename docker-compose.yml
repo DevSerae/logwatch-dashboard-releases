@@ -1,0 +1,78 @@
+# Logwatch Dashboard. Don't edit ports/profiles here: `python3 setup.py render` writes .env (profiles, UID/GID,
+# ports) and docker-compose.override.yml (syslog / forward / NetFlow listeners) from config/config.yaml.
+name: logwatch
+
+x-app: &app
+  build:
+    context: .
+    args:
+      UID: ${LW_UID:-1000}
+      GID: ${LW_GID:-1000}
+      WITH_TRIVY: ${WITH_TRIVY:-0}
+  image: logwatch-dashboard:local
+  restart: unless-stopped
+  environment:
+    TZ: ${TZ:-UTC}
+  volumes:
+    - ./config:/config:ro
+    - ./secrets:/secrets:ro
+    - ./data:/data
+  depends_on: [victorialogs]
+
+services:
+  board:
+    <<: *app
+    ports:
+      - "${BOARD_BIND:-0.0.0.0}:${BOARD_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+
+  worker:
+    <<: *app
+    command: ["python3", "worker.py"]
+
+  victorialogs:
+    image: ${VL_IMAGE:-victoriametrics/victoria-logs:latest}
+    restart: unless-stopped
+    command:
+      - -storageDataPath=/vlogs
+      - -retentionPeriod=${VL_RETENTION:-30d}
+      - -retention.maxDiskSpaceUsageBytes=${VL_MAX_DISK:-20GiB}
+      - -httpListenAddr=:9428
+      - -syslog.listenAddr.tcp=:514
+      - -syslog.listenAddr.udp=:514
+      - -syslog.timezone=${TZ:-UTC}
+    volumes:
+      - vlogs:/vlogs
+
+  # Windows agents (Fluent Bit forward) and NetFlow records → VictoriaLogs. Profile "collector".
+  fluent-bit:
+    image: ${FLUENTBIT_IMAGE:-fluent/fluent-bit:latest}
+    restart: unless-stopped
+    profiles: ["collector"]
+    command: ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/etc/logwatch.yaml"]
+    volumes:
+      - ./docker/fluent-bit.yaml:/fluent-bit/etc/logwatch.yaml:ro
+      - fbstate:/var/lib/fluent-bit
+    depends_on: [victorialogs]
+
+  # NetFlow/IPFIX collector. Profile "netflow". Records go to fluent-bit through Docker's fluentd log driver.
+  goflow2:
+    image: ${GOFLOW2_IMAGE:-netsampler/goflow2:latest}
+    restart: unless-stopped
+    profiles: ["netflow"]
+    command: ["-listen=netflow://:2055", "-format=json", "-transport=file"]
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "127.0.0.1:${FORWARD_PORT:-24224}"
+        fluentd-async: "true"
+        tag: netflow
+    depends_on: [fluent-bit]
+
+volumes:
+  vlogs:
+  fbstate:

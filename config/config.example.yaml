@@ -1,0 +1,173 @@
+# Logwatch Dashboard configuration (NOT secret). Copied to config/config.yaml by `python3 setup.py init`.
+# Secrets (passwords, API keys, tokens) never go here: they live in secrets/secrets.env (`setup.py secret NAME`).
+# Every module has `enabled: true|false`; a disabled module's collectors, jobs, tabs and cards are hidden.
+# `python3 setup.py modules` lists them, `setup.py modules --enable a,b --disable c` toggles,
+# `setup.py check` validates, `setup.py render` regenerates .env + docker-compose.override.yml. Restart after changes.
+# Addresses below are documentation examples (example.com, 192.0.2.x, 203.0.113.x): replace or delete them.
+
+board:
+  title: Logwatch Dashboard
+  host_label: ""                  # shown in the top bar, e.g. "logwatch-1"
+  session_hours: 12
+  cookie_secure: true             # false only if you open the board over plain http (LAN, no reverse proxy)
+  allow_cidrs: []                 # empty = anyone who can reach the port may see the login page; e.g. [192.0.2.0/24]
+  #                                 curl from the Docker host or a same-host proxy arrives from the Docker gateway
+  #                                 (e.g. 172.18.0.1): list it too, or test with the host's LAN IP
+  trusted_proxies: []             # reverse proxies whose X-Forwarded-For is believed, e.g. [192.0.2.5/32]
+  proxy_public: false             # true: visitors through trusted_proxies (a public tunnel) skip allow_cidrs
+  open_cidrs: []                  # these networks skip the login (trusted LAN, dashboard iframes); keep it narrow
+  open_role: admin                # role for open_cidrs visitors: admin | auditor (view only)
+  cf_access: {}                   # Cloudflare Access in front of the board: a valid Access JWT signs you in
+  #  team: yourteam.cloudflareaccess.com
+  #  aud: <the Access application's AUD tag>
+  #  required: true               # anything from trusted_proxies must carry a valid JWT (no password fallback)
+  #  role: admin                  # Access users without a board user (matched by e-mail): admin | auditor
+  frame_ancestors: []             # sites allowed to embed the board in an iframe (dashboards), e.g. [https://home.example.com]
+  ok_redirect_hosts: []           # uptime: a redirect to one of these (an SSO login page) counts as up, e.g. [sso.example.com]
+  geoip: dbip                     # dbip (DB-IP Lite, no account) | maxmind (MAXMIND_* secrets) | off
+
+updates:
+  check: true                     # ask the public releases repo for new versions (every check_hours); the board prompts
+  check_hours: 12
+  auto: false                     # install new releases on their own at auto_at (the board's prompt can turn this on)
+  auto_at: "03:00"                # local time; needs the host updater (install.sh sets up logwatch-update.path/.timer)
+  repo: DevSerae/logwatch-dashboard-releases   # only used for the check; the host updater has its own in /etc/default/logwatch-dashboard
+
+victorialogs:
+  url: http://victorialogs:9428   # the bundled container; point elsewhere to use your own VictoriaLogs
+  disk_path: /data                # disk the "board disk" check watches
+
+# --- SSH pull targets: hosts the board reaches with its own key (remote/linux/install-agent.sh on each) -------------
+ssh:
+  user: logwatch
+  hosts: []
+  #  - name: edge-1                # must match the host's syslog hostname
+  #    address: 192.0.2.21
+  #    port: 22
+  #    roles: [logpull, trafficpull, csctl, images]
+
+# --- custom alert rules on any log (LogsQL): one board item per rule and host when count >= threshold -------------
+log_rules: []
+#  - name: Switch port flapping
+#    query: 'hostname:core-switch "changed state to down"'
+#    threshold: 3
+#    severity: warning           # info | warning | error | critical
+#    source: network
+
+# ================================ modules ================================
+
+syslog:                           # hosts push syslog to the board (remote/linux/logfwd.sh, network gear)
+  enabled: true
+  port: 514                       # published TCP+UDP
+  silent_hours: 2                 # "stopped sending logs" after this long
+  ssh_fail_threshold: 20          # failed SSH logins per host per window before an item
+  ignore_login_from: []           # successful logins from these CIDRs aren't reported, e.g. [192.0.2.0/24]
+
+pull:                             # hosts that can't push syslog: the board pulls journal lines over SSH (role logpull)
+  enabled: false
+
+uptime:                           # HTTP/TCP probes every minute
+  enabled: false
+  fails_to_alert: 2
+  targets: []
+  #  - {name: Website, url: "https://www.example.com", expect: [200], group: Public}   # group: optional heading
+  #  - {name: Mail SMTP, kind: tcp, host: mail.example.com, port: 25}
+
+expiry:                           # TLS certs, domain registrations (RDAP), manual dates (licences, contracts)
+  enabled: false
+  warn_days: 30
+  tls: []
+  #  - {host: www.example.com, port: 443}
+  #  - {host: 192.0.2.30, port: 8443, sni: nas.example.com}
+  domains: []                     # e.g. [example.com]
+  manual: []                      # e.g. [{name: "Backup software licence", expires: 2027-03-01}]
+
+proxmox:                          # nodes, guests, storage, backups, SMART/ZFS (PROXMOX_TOKEN: user@realm!id=uuid, PVEAuditor)
+  enabled: false
+  url: https://192.0.2.40:8006
+  verify_tls: false
+  storage_warn_pct: 85
+  backups: true
+  backup_stale_hours: 48
+  disks: true
+  no_logs_expected: []            # running guests that never send logs on purpose
+
+trivy:                            # weekly HIGH/CRITICAL scan of running container images (role images on hosts)
+  enabled: false
+
+windows:                          # Windows event logs via Fluent Bit (remote/windows/install.ps1)
+  enabled: false
+  forward_port: 24224             # published TCP
+  fail_threshold: 30              # failed logons per host per window before an item
+  dns:
+    enabled: false                # Windows DNS server debug log → top domains per device
+    noise_regex: '(\.local|\.arpa|wpad|_msdcs|_ldap|_kerberos)'
+
+unifi:                            # UniFi Network: IPS alerts, firewall flows, events, WAN (UNIFI_API_KEY; only reads, MODULES.md lists the calls)
+  enabled: false
+  url: https://192.0.2.1          # the console, or a Site Manager connector URL
+  site: default
+  verify_tls: false
+  gateway_name: gateway
+  ips_item_min_risk: high         # low | medium | high | very_high
+  wan: true
+
+netflow:                          # NetFlow/IPFIX from routers → goflow2 (UDP 2055)
+  enabled: false
+  port: 2055
+
+crowdsec:                         # CrowdSec heartbeat, bans, WAF blocks (remote/crowdsec/setup.sh on each host)
+  enabled: false
+  hosts: []
+  #  - {name: edge-1, web: true}  # web: it fronts HTTP sites (WAF expected)
+
+traffic:                          # every request/connection through edge hosts (role trafficpull)
+  enabled: false
+  block_status: [403, 429, 444]   # statuses the edge itself answers when blocking
+  dnat_map: {}                    # DNAT target → real host address, e.g. {"10.0.0.5": "192.0.2.60"}
+  service_names: {}               # "addr:port" → name shown for raw TCP/UDP services, e.g. {"192.0.2.60:5432": "postgres"}
+
+waf:                              # custom L7 WAF rules, bans, country/ASN rules, OWASP CRS level (role waf + CrowdSec AppSec)
+  enabled: false                  # edge hosts need role waf (install-agent.sh) and remote/crowdsec/setup.sh with AppSec
+  cloudflare: {}                  # optional: also push country/ASN rules and IP bans to Cloudflare (CLOUDFLARE_API_TOKEN:
+  #  zone: 0123abcd…              #   Zone WAF Edit + Account Filter Lists Edit); zone ID, not the name
+  #  account: 4567ef01…           # account ID that owns the IP list
+  crs_exclusions: []              # suggested CRS exclusions for logged-in admin areas, e.g.
+  #  - {host: app.example.com, paths: [/admin/], auth: [bearer, "cookie:session"]}
+  port_groups: []                 # port proxies (ssh role l4waf): imported once as port lists (Edge WAF → Lists), e.g.
+  #  - {name: App servers, ports: "8000-8100"}
+  #  - {name: SFTP, ports: "2022"}
+
+action1:                          # Action1 patch status (ACTION1_CLIENT_ID/SECRET/ORG_ID, read-only API client)
+  enabled: false
+  base_url: https://app.action1.com/api/3.0
+
+wazuh:                            # Wazuh agents/SCA/vulnerabilities on Hosts + alerts in Logs (WAZUH_API_USER/PASSWORD:
+  enabled: false                  #   read-only API user; WAZUH_INDEXER_USER/PASSWORD for vulnerabilities + alerts)
+  api_url: https://wazuh.example.com:55000
+  indexer_url: ""                 # https://wazuh.example.com:9200 (empty = agents + SCA only)
+  verify_tls: false               # Wazuh ships self-signed certs; true once you trust its CA
+  alerts: indexer                 # indexer = pull alerts every run | syslog = manager <syslog_output> to this board | off
+  min_level: 3                    # alerts at or above this rule level go into the log store
+  alert_item_level: 12            # ...and at or above this one raise a board item
+  vuln_items: true                # a board item per agent with critical vulnerabilities
+
+alertfile:                        # alerts another system writes as JSON lines {id, severity, source, message}
+  enabled: false                  #   e.g. a file server's quota/backup/patch scripts; Error/Warning → items, rest → events
+  path: ""                        # //fileserver.example.com/share/Alerts/alerts.jsonl (ALERTFILE_SMB_USER/PASSWORD,
+                                  #   user as DOMAIN\\user) or a path inside the container, e.g. /data/alerts.jsonl
+  source: alerts                  # source name on the board
+  import_existing: false          # first run: false = start from the newest id, true = import every line once
+
+instatus:                         # put an Instatus status page into maintenance from the board (INSTATUS_API_KEY)
+  enabled: false
+  page_id: ""
+  public_text: "We're carrying out scheduled maintenance."
+
+webhook:                          # POST /api/ingest with Bearer INGEST_TOKEN: anything can raise/clear board items
+  enabled: false
+
+ai:                               # "Resolve with AI": ai-runner/runner.py on a machine with your AI agent CLI
+  enabled: false
+  agent_label: AI agent           # shown on the board, e.g. "Claude Code"
+  chat_url: ""                    # optional link to the agent's own chat UI for a run, "{run_id}" is replaced

@@ -1,0 +1,48 @@
+{% extends "_page.html" %}{% block t %}Account{% endblock %}{% block h %}Your account{% endblock %}
+{% block body %}
+{% if not u %}
+<section><h2>{{ me.name }}</h2><p class="d">You're signed in through Cloudflare Access or a trusted network, as <b>{{ role }}</b>. There's no board password or MFA to manage for this sign-in{% if role == "admin" %}; add a board user with this e-mail on <a href="/users" style="color:#b9b0ff">Users &amp; sign-in</a> to give it its own role{% endif %}.</p></section>
+{% else %}
+{% if enroll %}<div class="err">An admin requires MFA for password sign-in. Set it up below to continue.</div>{% endif %}
+<section><h2>{{ u.name }} <span class="pill {{ 'a' if u.role == 'admin' }}">{{ u.role }}</span></h2>
+  <p class="d">{% if u.email %}E-mail (for SSO): {{ u.email }}{% else %}No e-mail set: SSO sign-in isn't linked to this account.{% endif %}
+  {% if u.last_login %}<br>Last sign-in: {{ u.last_login|age }} ago via {{ u.last_via }}{% if u.last_ip %} from {{ u.last_ip }}{% endif %}.{% endif %}</p>
+  {% if role != "admin" %}<p class="d">Auditor: you can see everything on the board but can't change anything.</p>{% endif %}
+</section>
+
+<section><h2>Two-factor sign-in (MFA)</h2>
+{% if codes %}
+  <p>Recovery codes: each works once, instead of a code from your app. Store them somewhere safe.</p>
+  <div class="codes">{% for c in codes %}<span>{{ c }}</span>{% endfor %}</div>
+{% elif setup %}
+  <p>1. Scan this with an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Bitwarden, Aegis…).</p>
+  {% if setup.qr %}<div class="qr">{{ setup.qr|safe }}</div>{% endif %}
+  <p class="d">Can't scan? Enter this key: <code>{{ setup.secret }}</code></p>
+  <form method="post" action="/account"><input type="hidden" name="op" value="mfa_confirm">
+    <label>2. Enter the 6-digit code the app shows</label><input name="code" autocomplete="one-time-code" inputmode="numeric" maxlength="7" autofocus required>
+    <button>Turn on MFA</button></form>
+{% elif u.totp_on %}
+  <p><span class="pill ok">on</span> Password sign-ins ask for a code from your authenticator app. {{ left }} recovery code{{ '' if left == 1 else 's' }} left.</p>
+  <details><summary>New recovery codes</summary><form method="post" action="/account"><input type="hidden" name="op" value="recovery">
+    <input name="code" placeholder="current code" autocomplete="one-time-code" required><button class="g">Make new codes</button></form></details>
+  {% if not pol.mfa_required %}<details><summary>Turn off MFA</summary><form method="post" action="/account"><input type="hidden" name="op" value="mfa_off">
+    <input name="code" placeholder="current code" autocomplete="one-time-code" required><button class="r">Turn off</button></form></details>{% endif %}
+{% else %}
+  <p><span class="pill no">off</span> Add a second step to password sign-in with an authenticator app.</p>
+  <form method="post" action="/account"><input type="hidden" name="op" value="mfa_start"><button>Set up MFA</button></form>
+{% endif %}
+</section>
+
+<section><h2>{{ 'Change password' if u.pw_hash else 'Set a password' }}</h2>
+  {% if not u.pw_hash %}<p class="d">You sign in with SSO. A password adds username + password sign-in as well.</p>{% endif %}
+  <form method="post" action="/account"><input type="hidden" name="op" value="password">
+  <div class="grid">{% if u.pw_hash %}<div><label>Current password</label><input class="w100" type="password" name="current" autocomplete="current-password" required></div>{% endif %}
+  <div><label>New password (12+ characters)</label><input class="w100" type="password" name="new" minlength="12" autocomplete="new-password" required></div>
+  <div><label>New password again</label><input class="w100" type="password" name="new2" minlength="12" autocomplete="new-password" required></div></div>
+  <button>Save password</button></form>
+</section>
+
+<section><h2>Sessions</h2><p class="d">Sign out of this account in every browser, this one included.</p>
+  <form method="post" action="/account"><input type="hidden" name="op" value="signout_all"><button class="g">Sign out everywhere</button></form></section>
+{% endif %}
+{% endblock %}

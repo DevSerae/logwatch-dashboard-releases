@@ -1,0 +1,48 @@
+# Logwatch Dashboard: ship Windows events and the DNS debug log to the board (Fluent Bit forward, port @PORT@).
+service:
+  flush: 5
+  log_level: warn
+  storage.path: C:\ProgramData\fluent-bit\storage
+  storage.backlog.mem_limit: 16M
+
+pipeline:
+  inputs:
+    - name: winevtlog
+      channels: Security,System,Application
+      interval_sec: 5
+      read_existing_events: false
+      db: C:\ProgramData\fluent-bit\winevt.sqlite
+      storage.type: filesystem
+      tag: win
+    # 5-min heartbeat: quiet servers (Level <= 3 only) can go hours without an event; the board's
+    # host-silent check needs proof that Fluent Bit itself is alive.
+    - name: dummy
+      dummy: '{"lw_heartbeat": 1}'
+      interval_sec: 300
+      tag: win
+    - name: tail
+      path: C:\Windows\System32\dns\dns.log
+      db: C:\ProgramData\fluent-bit\dns.sqlite
+      refresh_interval: 10
+      rotate_wait: 5
+      skip_long_lines: true
+      storage.type: filesystem
+      tag: dns
+
+  filters:
+    - name: lua
+      match: win
+      script: C:\Program Files\fluent-bit\conf\logwatch.lua
+      call: winevt
+    - name: lua
+      match: dns
+      script: C:\Program Files\fluent-bit\conf\logwatch.lua
+      call: dns
+
+  outputs:
+    - name: forward
+      match: '*'
+      host: @BOARD@
+      port: @PORT@
+      retry_limit: no_limits
+      storage.total_limit_size: 200M

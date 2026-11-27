@@ -1,0 +1,88 @@
+{% extends "_page.html" %}{% block t %}Users & sign-in{% endblock %}{% block h %}Users &amp; sign-in{% endblock %}
+{% block body %}
+<section><h2>Users</h2>
+<p class="d"><b>admin</b>: everything. <b>auditor</b>: sees every page and log, changes nothing (can still manage their own password and MFA).</p>
+<table><tr><th>User</th><th>Role</th><th>Sign-in</th><th>Last sign-in</th><th></th></tr>
+{% for x in users %}<tr>
+  <td><b>{{ x.name }}</b>{% if x.name|lower == me.name|lower %} <span class="d">(you)</span>{% endif %}<br><span class="d">{{ x.email or "no e-mail" }}</span></td>
+  <td><span class="pill {{ 'a' if x.role == 'admin' }}">{{ x.role }}</span>{% if x.disabled %} <span class="pill no">disabled</span>{% endif %}</td>
+  <td>{{ "password" if x.has_pw }}{{ " + " if x.has_pw and x.email }}{{ "SSO" if x.email }}<br>
+    {% if x.totp_on %}<span class="pill ok">MFA</span> <span class="d">{{ x.recovery_left }} recovery</span>{% else %}<span class="d">no MFA</span>{% endif %}</td>
+  <td class="d">{% if x.last_login %}{{ x.last_login|age }} ago<br>{{ x.last_via }}{% else %}never{% endif %}</td>
+  <td><details><summary>Manage</summary>
+    <form method="post" action="/users"><input type="hidden" name="op" value="role"><input type="hidden" name="name" value="{{ x.name }}">
+      <select name="role">{% for r in roles %}<option {{ 'selected' if r == x.role }}>{{ r }}</option>{% endfor %}</select><button class="g sm">Set role</button></form>
+    <form method="post" action="/users"><input type="hidden" name="op" value="email"><input type="hidden" name="name" value="{{ x.name }}">
+      <input name="email" type="email" value="{{ x.email }}" placeholder="e-mail for SSO"><button class="g sm">Save e-mail</button></form>
+    <form method="post" action="/users"><input type="hidden" name="op" value="password"><input type="hidden" name="name" value="{{ x.name }}">
+      <input name="password" type="password" minlength="12" placeholder="new password" autocomplete="new-password" required><button class="g sm">Set password</button></form>
+    <form method="post" action="/users">
+      <input type="hidden" name="name" value="{{ x.name }}">
+      {% if x.totp_on %}<button class="g sm" name="op" value="mfa_reset">Reset MFA</button>{% endif %}
+      <button class="g sm" name="op" value="signout">Sign out everywhere</button>
+      <button class="g sm" name="op" value="{{ 'enable' if x.disabled else 'disable' }}">{{ 'Enable' if x.disabled else 'Disable' }}</button>
+      <button class="r sm" name="op" value="delete" onclick="return confirm('Delete {{ x.name }}?')">Delete</button></form>
+  </details></td></tr>{% endfor %}
+</table>
+<h3>Add a user</h3>
+<form method="post" action="/users"><input type="hidden" name="op" value="add">
+<div class="grid"><div><label>Username</label><input class="w100" name="name" required></div>
+  <div><label>Role</label><select class="w100" name="role">{% for r in roles %}<option {{ 'selected' if r == 'auditor' }}>{{ r }}</option>{% endfor %}</select></div>
+  <div><label>E-mail (SSO sign-in)</label><input class="w100" name="email" type="email"></div>
+  <div><label>Password (12+, blank = SSO only)</label><input class="w100" name="password" type="password" minlength="12" autocomplete="new-password"></div></div>
+<button>Add user</button></form>
+</section>
+
+<section><h2>Sign-in settings</h2>
+<form method="post" action="/users"><input type="hidden" name="op" value="policy">
+  <label><input type="checkbox" name="mfa_required" value="1" {{ 'checked' if pol.mfa_required }}>Require MFA for password sign-in (users without it must set it up before anything else; SSO sign-ins rely on the provider's own MFA)</label>
+  <label>Board URL, as users open it (used for SSO redirect URIs)</label>
+  <input class="w100" name="public_url" value="{{ pol.public_url }}" placeholder="{{ base }}">
+  <button>Save</button></form>
+</section>
+
+<section><h2>Single sign-on</h2>
+<p class="d">Users sign in with a provider when its verified e-mail matches a board user's e-mail. With auto-create on, new e-mails (optionally only from your domains) get a user with that role on first sign-in.</p>
+{% if providers %}<table><tr><th>Provider</th><th>Redirect URI (register this with the provider)</th><th>New users</th><th></th></tr>
+{% for p in providers %}<tr><td><b>{{ p.label }}</b> <span class="d">{{ p.kind }}</span>{% if not p.enabled %} <span class="pill no">off</span>{% endif %}</td>
+  <td><code>{{ p.redirect }}</code></td>
+  <td class="d">{% if p.auto_role %}auto-create as {{ p.auto_role }}{% if p.domains %}<br>({{ p.domains }}){% endif %}{% else %}existing users only{% endif %}</td>
+  <td><form method="post" action="/users" style="display:flex;gap:6px"><input type="hidden" name="id" value="{{ p.id }}">
+    <button class="g sm" name="op" value="{{ 'sso_off' if p.enabled else 'sso_on' }}">{{ 'Turn off' if p.enabled else 'Turn on' }}</button>
+    <button class="r sm" name="op" value="sso_delete" onclick="return confirm('Remove {{ p.label }} sign-in?')">Remove</button></form></td></tr>{% endfor %}
+</table>{% endif %}
+<h3>Add or update a provider</h3>
+<form method="post" action="/users" id="ssof"><input type="hidden" name="op" value="sso_save">
+<div class="grid">
+  <div><label>Type</label><select class="w100" name="kind" id="kind">{% for k, v in presets.items() %}<option value="{{ k }}">{{ v.label }}</option>{% endfor %}</select></div>
+  <div><label>ID (in the redirect URI; same ID = update)</label><input class="w100" name="id" id="pid" placeholder="google"></div>
+  <div><label>Button label</label><input class="w100" name="label" placeholder="Google"></div>
+  <div><label>Client ID</label><input class="w100" name="client_id" required></div>
+  <div><label>Client secret (blank = keep)</label><input class="w100" name="client_secret" type="password" autocomplete="off"></div>
+  <div id="iss"><label id="issl">Issuer URL</label><input class="w100" name="issuer" id="issuer"></div>
+  <div><label>Auto-create new users as</label><select class="w100" name="auto_role"><option value="">off (existing users only)</option>{% for r in roles %}<option>{{ r }}</option>{% endfor %}</select></div>
+  <div><label>…only for e-mail domains</label><input class="w100" name="domains" placeholder="example.com, example.org"></div>
+</div>
+<label id="trust"><input type="checkbox" name="trust_email" value="1">Trust e-mails without email_verified (only for an IdP you run)</label>
+<p class="d" id="hint"></p>
+<button>Save provider</button></form>
+</section>
+<script>
+const P = {{ presets|tojson }}, base = {{ base|tojson }};
+const kind = document.getElementById("kind"), pid = document.getElementById("pid");
+function upd() {
+  const k = kind.value, id = pid.value.trim() || k;
+  document.getElementById("iss").style.display = (k === "oidc" || k === "microsoft") ? "" : "none";
+  document.getElementById("issl").textContent = k === "microsoft" ? "Tenant (directory) ID or domain" : "Issuer URL (https://…)";
+  document.getElementById("issuer").placeholder = k === "microsoft" ? "contoso.onmicrosoft.com" : "https://auth.example.com/application/o/logwatch";
+  document.getElementById("trust").style.display = k === "oidc" ? "" : "none";
+  pid.placeholder = k;
+  const h = document.getElementById("hint");
+  h.textContent = "";
+  h.append("Redirect URI: ");
+  const c = document.createElement("code"); c.textContent = base.replace(/\/$/, "") + "/auth/sso/" + id + "/callback"; h.append(c);
+  if (P[k].console) { h.append(" · create the app in "); const a = document.createElement("a"); a.href = P[k].console; a.target = "_blank"; a.rel = "noopener"; a.style.color = "#b9b0ff"; a.textContent = P[k].label + "'s console"; h.append(a); }
+}
+kind.addEventListener("change", upd); pid.addEventListener("input", upd); upd();
+</script>
+{% endblock %}

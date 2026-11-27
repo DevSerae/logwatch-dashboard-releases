@@ -1,0 +1,36 @@
+# Logwatch Dashboard: ship Windows events to the board (Fluent Bit forward, port @PORT@).
+service:
+  flush: 5
+  log_level: warn
+  storage.path: C:\ProgramData\fluent-bit\storage
+  storage.backlog.mem_limit: 16M
+
+pipeline:
+  inputs:
+    - name: winevtlog
+      channels: Security,System,Application
+      interval_sec: 5
+      read_existing_events: false
+      db: C:\ProgramData\fluent-bit\winevt.sqlite
+      storage.type: filesystem
+      tag: win
+    # 5-min heartbeat: quiet servers (Level <= 3 only) can go hours without an event; the board's
+    # host-silent check needs proof that Fluent Bit itself is alive.
+    - name: dummy
+      dummy: '{"lw_heartbeat": 1}'
+      interval_sec: 300
+      tag: win
+
+  filters:
+    - name: lua
+      match: win
+      script: C:\Program Files\fluent-bit\conf\logwatch.lua
+      call: winevt
+
+  outputs:
+    - name: forward
+      match: '*'
+      host: @BOARD@
+      port: @PORT@
+      retry_limit: no_limits
+      storage.total_limit_size: 200M

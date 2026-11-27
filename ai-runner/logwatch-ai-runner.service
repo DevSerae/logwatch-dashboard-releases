@@ -1,0 +1,16 @@
+# systemd unit for the runner. Copy to /etc/systemd/system/ (or ~/.config/systemd/user/ for a user unit and drop User=),
+# adjust User/paths, then: systemctl daemon-reload && systemctl enable --now logwatch-ai-runner
+[Unit]
+Description=Logwatch Dashboard AI runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=CHANGE_ME
+WorkingDirectory=/opt/logwatch-ai-runner
+ExecStart=/usr/bin/python3 /opt/logwatch-ai-runner/runner.py --env /opt/logwatch-ai-runner/runner.env
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
