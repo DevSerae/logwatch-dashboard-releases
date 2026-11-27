@@ -42,7 +42,7 @@ and whether the tools they need are present.
 | `pull` | Same as syslog for hosts that can't push: the board pulls new journal lines over SSH every minute | `ssh.hosts` with role `logpull` | `remote/linux/install-agent.sh --roles logpull` |
 | `uptime` | HTTP(S)/TCP probes every minute, Services tab, response-time history | checks are added/removed on the Services tab (`uptime.targets` seeds the first run) | — |
 | `expiry` | TLS certificate, domain (RDAP) and manual expiry dates, warns `warn_days` ahead | `expiry.tls/domains/manual` | — |
-| `proxmox` | Node/guest/storage status, backup freshness per guest, SMART + ZFS health, "guest never sent logs" | `PROXMOX_TOKEN` (`user@realm!tokenid=uuid`; role **PVEAuditor** on `/`), `proxmox.url` | — |
+| `proxmox` | Node/guest/storage status, backup freshness per guest, SMART + ZFS health, "guest never sent logs", network bandwidth per node and guest (24 h, 30 d; `bandwidth`, optional item over `bandwidth_warn_gib_day`) | `PROXMOX_TOKEN` (`user@realm!tokenid=uuid`; role **PVEAuditor** on `/`), `proxmox.url` | — |
 | `trivy` | Weekly scan of running container images for fixable HIGH/CRITICAL CVEs | built with Trivy (render sets `WITH_TRIVY=1`); `ssh.hosts` role `images` | install-agent `--roles images` (lists `docker ps` images only) |
 | `windows` | Windows event log: failed logons, service crashes, disk/NTFS errors, reboots, heartbeat; optional DNS top domains per device | Fluent Bit forward port (`windows.forward_port`) published | `remote/windows/install.ps1` (Fluent Bit service) |
 | `unifi` | IPS/IDS alerts, firewall flows on the Edge tab, gateway events, WAN health | `UNIFI_API_KEY` (UniFi Network → Integrations; the board only reads, see [UniFi API calls](#unifi-api-calls)), `unifi.url` | — |

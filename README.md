@@ -138,7 +138,7 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 
 | Module | Turn it on and you get |
 |---|---|
-| **Proxmox VE** | Nodes, guests, storage, backup freshness per guest, SMART and ZFS health, guests that never sent logs. In the setup, **Discover** fills every host list from your cluster |
+| **Proxmox VE** | Nodes, guests, storage, backup freshness per guest, SMART and ZFS health, bandwidth per node and guest, guests that never sent logs. In the setup, **Discover** fills every host list from your cluster |
 
 <p align="center">
   <img src="assets/board-infra.png" alt="Infra: Proxmox nodes, backups, disks, ZFS, WAN and expiry dates" width="88%">

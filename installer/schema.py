@@ -158,6 +158,8 @@ MONITORS = [
             F("proxmox.backup_stale_hours", "Backup counts as stale after (hours)", "int", 48),
             F("proxmox.disks", "SMART + ZFS health", "bool", True),
             F("proxmox.storage_warn_pct", "Storage warning at (%)", "int", 85),
+            F("proxmox.bandwidth", "Bandwidth per node and guest (Infra → Bandwidth)", "bool", True),
+            F("proxmox.bandwidth_warn_gib_day", "Item when a guest moves more than (GiB in 24 h, 0 = off)", "int", 0),
             F("proxmox.no_logs_expected", "Guests that never send logs on purpose", "csv", []),
         ], checks=("proxmox",)),
     ]),
