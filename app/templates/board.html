@@ -523,6 +523,13 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
            background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--accent); border:1px solid color-mix(in srgb, var(--accent) 35%, transparent); text-decoration:none; }
   .aitag.fixed { background:rgba(64,192,87,.12); color:var(--okt); border-color:rgba(64,192,87,.4); }
   .aitag.not_fixed, .aitag.failed { background:rgba(250,176,5,.1); color:var(--warning); border-color:rgba(250,176,5,.4); }
+  .aitag.needs_approval { background:color-mix(in srgb, var(--accent) 22%, transparent); color:var(--accent2); border-color:var(--accent); }
+  .aiask { margin:8px 0 4px; padding:9px 12px; border:1px solid color-mix(in srgb, var(--accent) 45%, var(--line2)); border-left:3px solid var(--accent); border-radius:8px; background:color-mix(in srgb, var(--accent) 7%, var(--panel)); font-size:13px; }
+  .aiask .aqh { display:flex; align-items:center; gap:8px; font-size:12px; } .aiask .aqh b { color:var(--accent2); font-weight:600; }
+  .aiask .aqa { margin:5px 0 2px; white-space:pre-wrap; overflow-wrap:anywhere; font-family:var(--mono); font-size:12px; line-height:1.5; }
+  .aiask details { margin-top:4px; } .aiask details > summary { cursor:pointer; color:var(--dim); font-size:12px; } .aiask .as { white-space:pre-wrap; font-size:12px; margin-top:4px; overflow-wrap:anywhere; }
+  .aiask .aqb { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .airun.needs_approval { border-left-color:var(--accent); } .airun .aqx { margin-top:6px; font-size:12px; color:var(--dim); } .airun .aqx b { color:var(--text); font-weight:600; }
   .aitag.run::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--accent); margin-right:5px; vertical-align:1px; animation:aipulse 1.2s ease-in-out infinite; }
   @keyframes aipulse { 50% { opacity:.25; } }
   .aib span { color:var(--accent); } .aib.ico { padding-left:9px; padding-right:9px; }
@@ -1169,7 +1176,7 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
 </style>
 {% if not mods.ai %}<style>.aib { display:none !important; }</style>{% endif %}
 {% if role != "admin" %}<style>/* auditor: view only */
-  form[method=post]:not([action="/logout"]), [data-airun], [data-brief], [data-mnew], [data-unew], [data-wafnew], [data-wbanadd],
+  form[method=post]:not([action="/logout"]), [data-airun], [data-aiok], [data-brief], [data-mnew], [data-unew], [data-wafnew], [data-wbanadd],
   [data-wcadd], .bsel, .ball, #bulkbar, [data-finst], [data-fdone], [data-setedit], [data-fsrvdone], [data-faccess], [data-updopen], #updchip, .fhow, .fhand, .aib { display:none !important; }
 </style>
 <script>(() => {   // a change slipped through the hidden controls: say why it failed
@@ -1220,8 +1227,14 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
 {%- endmacro %}
 {% macro aitag(key) -%}{% set r = (ai[key] or [None])[0] %}{% if r %}{% if r.state in ("queued", "running") -%}
 <span class="aitag run" data-airid="{{ r.id }}" data-aikey="{{ key }}" title="{{ ai_agent }} is working on this; the run streams in below.">AI working</span>
-{%- else %}{% set o = r.outcome if r.state == "done" else "failed" %}<span class="aitag {{ o }}" data-drawer="{{ key }}" title="{{ (r.summary or r.err)[:300] }} · click for the transcript">{{ {"fixed": "AI fixed: check", "not_fixed": "AI couldn't fix", "unknown": "AI finished", "failed": "AI run failed"}[o] }}</span>{% endif %}{% endif %}
+{%- else %}{% set o = r.outcome if r.state == "done" else "failed" %}{% if o == "needs_approval" and r.decision %}{% set o = "not_fixed" %}{% endif %}<span class="aitag {{ o }}" data-drawer="{{ key }}" title="{{ ("Asks to: " ~ r.ask) if o == "needs_approval" else (r.summary or r.err)[:300] }} · click for the transcript">{{ {"fixed": "AI fixed: check", "not_fixed": "AI denied" if r.decision == "denied" else "AI couldn't fix", "needs_approval": "AI needs your OK", "unknown": "AI finished", "failed": "AI run failed"}[o] }}</span>{% endif %}{% endif %}
 {%- endmacro %}
+{% macro aiask(key) -%}{% set r = (ai[key] or [None])[0] %}{% if r and r.state == "done" and r.outcome == "needs_approval" and r.ask and not r.decision %}
+<div class="aiask"><div class="aqh">✦ <b>{{ ai_agent }} asks for your OK</b><span class="meta">{{ r.finished|age }} ago</span></div>
+  <div class="aqa">{{ r.ask }}</div>
+  {% if r.summary %}<details><summary>Why</summary><div class="as">{{ r.summary }}</div></details>{% endif %}
+  <div class="aqb"><button type="button" class="ok" data-aiok="{{ r.id }}" data-aikey="{{ key }}" data-dec="approve">Approve</button><button type="button" data-aiok="{{ r.id }}" data-aikey="{{ key }}" data-dec="deny">Deny</button><span class="meta">Approve starts a new run that does exactly this.</span></div></div>
+{%- endif %}{%- endmacro %}
 {% macro qbar(scope, ph, target) -%}
 <div class="qwrap"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4"/></svg><input class="qin" type="text" data-scope="{{ scope }}" data-in="{{ target }}" placeholder="{{ ph }}" autocomplete="off" spellcheck="false" aria-label="Filter"><span class="qn"></span></div>
 {%- endmacro %}
@@ -1307,7 +1320,7 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
 {# ---- top bar ---- #}
 <header class="topbar">
   <button type="button" class="hamb" id="hamb" aria-label="Menu" aria-controls="side"><i></i><i></i><i></i>{% if items or up_bad %}<b></b>{% elif bans_now or hosts_bad or exp_soon %}<b class="warn"></b>{% endif %}</button>
-  <div class="brand"><span class="logo"><svg viewBox="0 0 24 24"><path d="M2 12.5h4.5L9 6l5.5 12L17 12.5h5"/></svg></span>Logwatch<span class="bver" id="bver" title="Running version">v{{ board_version() }}</span><button type="button" class="updchip" id="updchip" hidden></button></div>
+  <div class="brand"><span class="logo"><svg viewBox="0 0 24 24"><path d="M2 12.5h4.5L9 6l5.5 12L17 12.5h5"/></svg></span>Logwatch<span class="bver" id="bver" title="Running version">v{{ board_version() }}</span><button type="button" class="updchip" id="updchip" hidden></button>{% if ai_asks and role == "admin" %}<button type="button" class="updchip aiaskchip" data-drawer="{{ ai_asks[0].key }}" title="{% for a in ai_asks %}{{ a.title }}: {{ a.ask[:120] }}{{ "\n" if not loop.last }}{% endfor %}">✦ {{ ai_asks|length }} AI {{ "approval" if ai_asks|length == 1 else "approvals" }}</button>{% endif %}</div>
   <span class="tsep"></span>
   {% if host_label %}<span class="acct" title="Host running the board">Host <b>{{ host_label }}</b></span>{% endif %}
   <div class="gs"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -1425,6 +1438,7 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
       <div class="title"><span class="sev fv" data-eq="sev:{{ i.severity }}" title="Show only {{ i.severity }}">{{ "to-do" if todo else i.severity }}</span>{{ i.title }}{{ aitag(i.key) }}
         {% if i.due %}<span class="due {{ 'over' if i.due < now }}" title="Due {{ i.due|ddate }}">{{ ("overdue " ~ i.due|age) if i.due < now else ("due in " ~ (now - (i.due - now))|age) }}</span>{% endif %}</div>
       {% if i.detail %}<div class="detail" title="Click to expand">{{ i.detail }}</div>{% endif %}
+      {{ aiask(i.key) }}
       {% if i.note %}<div class="note">✎ {{ i.note }}</div>{% endif %}
       <div class="meta"><span class="fv" data-eq="source:{{ i.source }}" title="Show only {{ i.source }}">{{ i.source }}</span>{% if host %} · <span class="fv" data-eq="host:{{ host|fq }}" title="Show only {{ host }}">{{ host }}</span>{% endif %} · {{ "added" if todo else "first" }} {{ i.first_seen|age }} ago{% if i.count > 1 %} · seen {{ i.count }}× · last {{ i.last_seen|age }} ago{% endif %}</div>
       <details class="more" data-keep="h:{{ i.key }}"><summary>Note & history{% if hist[i.key] %} ({{ hist[i.key]|length }}){% endif %}</summary>
@@ -1461,7 +1475,7 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
     <input type="checkbox" class="bsel" value="{{ i.key }}" aria-label="Select {{ i.title }}" title="Select for a bulk action">
     <div class="body"><div class="title">{{ i.title }}{{ aitag(i.key) }}</div><div class="meta">{{ i.source }} · {{ i.state }} · last {{ i.last_seen|age }} ago</div>
       {% for r in ai[i.key] or [] if r.state in ("done", "failed") %}
-      <div class="airun {{ r.outcome if r.state == 'done' else 'failed' }}"><div class="ah"><b>✦ {{ {"fixed": "Fixed by AI", "not_fixed": "AI couldn't fix", "unknown": "AI finished"}.get(r.outcome, "AI finished") if r.state == "done" else "AI run failed" }}</b>
+      <div class="airun {{ r.outcome if r.state == 'done' else 'failed' }}"><div class="ah"><b>✦ {{ {"fixed": "Fixed by AI", "not_fixed": "AI couldn't fix", "needs_approval": "AI asked for your OK", "unknown": "AI finished"}.get(r.outcome, "AI finished") if r.state == "done" else "AI run failed" }}</b>
         <span class="meta">{{ r.started|dtime if r.started else r.created|dtime }}{% if r.finished and r.started %} · {{ ((r.finished - r.started) / 60)|round(1) }} min{% endif %}{% if r.who %} · started by {{ r.who }}{% endif %}</span><span class="spacer"></span>
         {% if r.chat %}<a class="btn" href="{{ r.chat }}" target="_blank" rel="noopener" title="The run in the agent's own chat UI">Chat ↗</a>{% endif %}</div>
         {% if r.summary or r.err %}<div class="as">{{ r.summary or r.err }}</div>{% endif %}
@@ -3430,7 +3444,13 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
   }
 
   // ---- Resolve with AI: one run's summary + its step log ----
-  const AIO = {fixed: "Fixed by AI: check it", not_fixed: "AI couldn't fix", unknown: "AI finished"};
+  const AIO = {fixed: "Fixed by AI: check it", not_fixed: "AI couldn't fix", needs_approval: "AI asks for your OK", unknown: "AI finished"};
+  // A run that asked for the operator's OK: the action, then Approve / Deny (or who answered). key: the item.
+  const aiAsk = (r, key) => r.outcome !== "needs_approval" || !r.ask || r.state !== "done" ? ""
+    : r.decision ? `<div class="aqx">Asked to: <b>${esc(r.ask)}</b> · ${r.decision === "approved" ? "approved" : "denied"}${r.decided_by ? " by " + esc(r.decided_by) : ""}</div>`
+    : `<div class="aiask"><div class="aqh">✦ <b>${esc(AIAG)} asks for your OK</b></div><div class="aqa">${esc(r.ask)}</div>
+        <div class="aqb"><button type="button" class="ok" data-aiok="${esc(r.id)}" data-aikey="${esc(key || r.key || "")}" data-dec="approve">Approve</button><button type="button" data-aiok="${esc(r.id)}" data-aikey="${esc(key || r.key || "")}" data-dec="deny">Deny</button><span class="meta">Approve starts a new run that does exactly this.</span></div></div>`;
+  const aiOkd = r => r.approved ? `<div class="aqx">Carrying out what was approved: <b>${esc(r.approved)}</b></div>` : "";
   const aiSteps = log => !log.length ? '<div class="meta">No steps recorded.</div>' : log.map(x => x.t === "text" ? `<div class="tx">${esc(x.text)}</div>`
     : `<details class="${x.err ? "err" : ""}"><summary><b>${esc(x.name)}</b>${esc(x.desc || x.input.split("\n")[0])}</summary><pre class="in">${esc(x.input)}</pre>${x.out ? `<pre>${esc(x.out)}</pre>` : ""}</details>`).join("");
   function aiRun(r, steps) {
@@ -3439,7 +3459,7 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
     const t0 = r.started || r.created, dur = r.finished && r.started ? ` · ${((r.finished - r.started) / 60).toFixed(1)} min` : "";
     return `<div class="airun ${esc(o)}"><div class="ah"><b>✦ ${esc(head)}</b><span class="meta">${esc(new Date(t0 * 1000).toLocaleString())}${dur}${r.who ? " · started by " + esc(r.who) : ""}</span><span class="spacer"></span>
       <a class="btn" href="/ai/${esc(r.id)}" target="_blank" title="The full transcript">Transcript ↗</a>${r.chat ? `<a class="btn" href="${esc(r.chat)}" target="_blank" rel="noopener" title="The run in the agent's own chat UI">Chat ↗</a>` : ""}</div>
-      ${r.summary || r.err ? `<div class="as">${esc(r.summary || r.err)}</div>` : ""}
+      ${aiOkd(r)}${aiAsk(r)}${r.summary || r.err ? `<div class="as">${esc(r.summary || r.err)}</div>` : ""}
       ${steps && !live ? `<details><summary>Full log: ${(r.log || []).filter(x => x.t === "tool").length} steps</summary><div class="aisteps">${aiSteps(r.log || [])}</div></details>` : ""}</div>`;
   }
   // Resolve with AI, inline: start the run, then stream its steps into a box under the item (no new tab). Boxes come
@@ -3477,11 +3497,12 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
       if (box && grp && r.lead !== rid) {   // combined bulk run: the live transcript is under the lead item only
         box.innerHTML = `<div class="hd"><b>✦ ${esc(AIAG)}</b><span>${live ? (r.state === "queued" ? "Waiting for the runner…" : "working") : r.state === "failed" ? "run failed" : esc(AIO[r.outcome] || "finished")} · one combined run for ${grp.length} items</span><button type="button" class="x" data-aix="${esc(key)}" title="Hide (the run keeps going)">×</button></div>`
           + (live ? `<div class="meta">This item is in a combined run with ${others} other${others === 1 ? "" : "s"}. The transcript streams in under ${goLead}.</div>`
-                  : `${r.summary || r.err ? `<div class="${r.err && !r.summary ? "er" : ""}" style="white-space:pre-wrap">${esc(r.summary || r.err)}</div>` : ""}<div class="meta">Combined run: the full log is under ${goLead} · <a href="/ai/${esc(r.lead)}" target="_blank">Transcript ↗</a></div>`);
+                  : `${aiAsk({...r, id: rid}, key)}${r.summary || r.err ? `<div class="${r.err && !r.summary ? "er" : ""}" style="white-space:pre-wrap">${esc(r.summary || r.err)}</div>` : ""}<div class="meta">Combined run: the full log is under ${goLead} · <a href="/ai/${esc(r.lead)}" target="_blank">Transcript ↗</a></div>`);
       } else if (box) {
         const steps = (r.log || []), tools = steps.filter(x => x.t === "tool").length, last = steps.slice(-6);
         box.innerHTML = `<div class="hd"><b>✦ ${esc(AIAG)}</b><span>${live ? (r.state === "queued" ? (r.runner_old ? "Waiting: the AI runner is too old for combined runs. Update it (see Features → AI)." : r.runner_ok ? "Waiting for the runner…" : "The AI runner is offline; it starts when the runner is back.") : `working · ${tools} step${tools === 1 ? "" : "s"}`) : r.state === "failed" ? "run failed" : esc(AIO[r.outcome] || "finished")}${grp ? ` · one combined run for ${grp.length} items` : ""} · uses ${esc(AIAG)}'s usage</span><button type="button" class="x" data-aix="${esc(key)}" title="Hide (the run keeps going)">×</button></div>`
           + (grp ? `<div class="aigrp">${grp.map(g => `<button type="button" class="aigo ${esc(g.state === "failed" ? "failed" : g.outcome || "")}" data-aigo="${esc(g.key)}" title="Scroll to it">${esc(g.title)}</button>`).join("")}</div>` : "")
+          + aiOkd(r) + (live ? "" : aiAsk({...r, id: rid}, key))
           + (live ? `<div class="aisteps">${aiSteps(last)}</div>${last.length ? "" : '<div class="think">Getting the incident context…</div>'}<span class="car"></span>`
                   : `${r.summary || r.err ? `<div class="${r.err && !r.summary ? "er" : ""}" style="white-space:pre-wrap">${esc(r.summary || r.err)}</div>` : ""}<details><summary>Full log: ${tools} steps</summary><div class="aisteps">${aiSteps(steps)}</div></details>`);
       }
@@ -3489,9 +3510,28 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
       await new Promise(f => setTimeout(f, 1500));
     }
   }
+  async function aiDecide(btn) {   // Approve / Deny on a run that asked for the operator's OK
+    const yes = btn.dataset.dec === "approve", key = btn.dataset.aikey, box = btn.closest(".aiask");
+    const act = box ? $(".aqa", box).textContent : "";
+    if (!await ask(yes ? {title: "Approve this action?", body: act, warn: `${AIAG} starts a new run that does exactly this, on your servers. It uses ${AIAG}'s usage.`, ok: "Approve"}
+                       : {title: "Deny this action?", body: act, ok: "Deny"})) return;
+    $$(`[data-aiok="${CSS.escape(btn.dataset.aiok)}"]`).forEach(b => { b.disabled = true; });
+    try {
+      const r = await fetch("/ai/decide", {method: "POST", headers: {"X-Want": "json"}, body: new URLSearchParams({rid: btn.dataset.aiok, decision: btn.dataset.dec})});
+      if (!r.ok) throw new Error((await r.text()).slice(0, 200) || r.status);
+      const d = await r.json();
+      if (d.id && key) aiWatch(key, d.id);
+      await refresh(true);
+      if (drawer.classList.contains("on") && key) openDrawer(key);
+    } catch (e) {
+      $$(`[data-aiok="${CSS.escape(btn.dataset.aiok)}"]`).forEach(b => { b.disabled = false; });
+      ask({title: "Could not send your answer", body: String(e.message || e), ok: "OK", cancel: ""});
+    }
+  }
   function aiResume() { $$("#app [data-airid]").forEach(t => aiWatch(t.dataset.aikey, t.dataset.airid)); }
   document.addEventListener("click", e => {
     const b = e.target.closest("[data-airun]"); if (b) { aiStart(b.dataset.airun, b.dataset.ttl); return; }
+    const ok = e.target.closest("[data-aiok]"); if (ok) { aiDecide(ok); return; }
     const g = e.target.closest("[data-aigo]"); if (g) { const it = $(`#app .item[data-key="${CSS.escape(g.dataset.aigo)}"]`); if (it) { it.scrollIntoView({block: "center", behavior: "smooth"}); it.classList.add("aiflash"); setTimeout(() => it.classList.remove("aiflash"), 1600); } return; }
     const x = e.target.closest("[data-aix]"); if (x) { const k = x.dataset.aix; delete ailive[k]; x.closest(".ailive").remove(); }
   });

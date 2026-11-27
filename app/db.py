@@ -171,7 +171,11 @@ CREATE TABLE IF NOT EXISTS targets (         -- what the board checks (uptime, t
 );
 """
 MIGRATIONS = [("items", "note", "TEXT NOT NULL DEFAULT ''"), ("items", "due", "REAL"),
-              ("ai_runs", "grp", "TEXT NOT NULL DEFAULT ''")]   # grp: bulk "Resolve with AI" = one agent run for all its items (= the lead run's id)
+              ("ai_runs", "grp", "TEXT NOT NULL DEFAULT ''"),   # grp: bulk "Resolve with AI" = one agent run for all its items (= the lead run's id)
+              # AI approvals: ask = the one action a run wants the operator's OK for (outcome needs_approval), decision =
+              # approved | denied once someone answered, approved = the action a follow-up run was cleared to carry out
+              ("ai_runs", "ask", "TEXT NOT NULL DEFAULT ''"), ("ai_runs", "decision", "TEXT NOT NULL DEFAULT ''"),
+              ("ai_runs", "decided_by", "TEXT NOT NULL DEFAULT ''"), ("ai_runs", "approved", "TEXT NOT NULL DEFAULT ''")]
 
 
 @contextmanager
