@@ -3113,7 +3113,10 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
   }
   document.addEventListener("change", ev => { if (ev.target.id !== "wproj") return;
     cust.proj = PROJ[ev.target.value] ? ev.target.value : undefined; custSave();
-    const box = $("#wmap"); if (box) box.innerHTML = ""; drawMap(); });
+    // keep the box's height while the map is rebuilt: empty for a moment, the page would get shorter and the
+    // browser would clamp the scroll position (the page jumps up)
+    const box = $("#wmap"); if (!box) return;
+    box.style.minHeight = box.offsetHeight + "px"; box.innerHTML = ""; drawMap(); box.style.minHeight = ""; });
   function drawMap() {
     const box = $("#wmap"), e = eser(); if (!box || !box.clientWidth || !e) return;
     if (!world) { worldP = worldP || fetch("/static/world.json?v=3").then(r => r.json()).then(w => { world = w; drawMap(); }).catch(() => box.innerHTML = '<span class="meta">Map failed to load.</span>'); return; }
