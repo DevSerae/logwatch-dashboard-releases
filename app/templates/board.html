@@ -181,7 +181,7 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
   @media (min-width:761px) and (max-width:980px) { .topbar .tools .tick, .topbar .tools > a.btn { display:none; } }
   @media (min-width:761px) and (max-width:860px) { .topbar #kbtn { display:none; } }
 
-  .wmap { --mapland:color-mix(in oklab, var(--line2) 70%, var(--panel2)); }
+  .mapcard, .wmap { --mapland:color-mix(in oklab, var(--line2) 70%, var(--panel2)); }
 
   /* in-page dialogs (confirm / error), replacing the browser's confirm() and alert() */
   .mscrim { position:fixed; inset:0; z-index:90; display:grid; place-items:center; padding:16px;
@@ -1103,14 +1103,39 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
   .wmap path.hov { stroke:var(--text); stroke-width:1.2; }
   .wmap path.sel { stroke:var(--accent); stroke-width:1.4; }
   .wmap svg.globe { cursor:grab; touch-action:pan-y; } .wmap svg.globe.drag, .wmap svg.globe.drag path { cursor:grabbing; }
-  .wmap path.grat { fill:none; stroke:var(--line2); stroke-width:.5; opacity:.6; pointer-events:none; } .wmap .shade { pointer-events:none; }
+  .wmap path[data-cc] { transition:stroke .12s, fill .6s cubic-bezier(.2,.8,.2,1); }
+  .wmap path.grat { fill:none; stroke:var(--line2); stroke-width:.5; pointer-events:none; } .wmap .shade { pointer-events:none; }
   .wmap .sph { fill:color-mix(in oklab, var(--mapland) 22%, transparent); stroke:var(--line2); stroke-width:.6; pointer-events:none; }
-  .wproj { position:absolute; left:18px; bottom:14px; padding:1px 4px; font-size:11px; color:var(--dim); background:color-mix(in srgb, var(--panel2) 85%, transparent); }
-  @media (max-width:600px) { .wproj { position:static; align-self:flex-start; margin:0 0 10px 12px; } }
+  /* view picker: bottom-left of the map, the menu grows up out of the button */
+  .wproj { position:absolute; left:18px; bottom:14px; z-index:3; font-size:11.5px; }
+  .wproj .wpb { display:inline-flex; align-items:center; gap:7px; height:26px; padding:0 8px 0 7px; border-radius:7px; border:1px solid var(--line2); color:var(--dim); cursor:pointer;
+    background:color-mix(in srgb, var(--panel2) 88%, transparent); backdrop-filter:blur(6px); font:inherit; transition:color .15s, border-color .15s, background .15s, box-shadow .15s; }
+  .wproj .wpb:hover, .wproj.on .wpb { color:var(--text); border-color:color-mix(in srgb, var(--accent) 45%, var(--line2)); }
+  .wproj .wpb:focus-visible, .wproj .wpo:focus-visible { outline:none; box-shadow:0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent); }
+  .wproj svg { fill:none; stroke:currentColor; stroke-width:1.3; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
+  .wproj .vg { width:16px; height:16px; } .wproj .chev { width:9px; height:9px; stroke-width:1.6; transition:transform .25s cubic-bezier(.2,.8,.2,1); }
+  .wproj.on .chev { transform:rotate(180deg); }
+  .wproj .wpm { position:absolute; left:0; bottom:calc(100% + 6px); min-width:190px; padding:4px; background:var(--panel2); border:1px solid var(--line2); border-radius:9px;
+    box-shadow:0 18px 40px -12px #000; transform-origin:12px 100%; opacity:0; visibility:hidden; transform:translateY(6px) scale(.96);
+    transition:opacity .16s ease, transform .22s cubic-bezier(.2,.8,.2,1), visibility 0s .22s; }
+  .wproj.on .wpm { opacity:1; visibility:visible; transform:none; transition:opacity .16s ease, transform .26s cubic-bezier(.2,.8,.2,1), visibility 0s; }
+  .wproj .wpo { display:flex; align-items:center; gap:10px; padding:6px 9px; border-radius:6px; cursor:pointer; color:var(--dim); outline:none;
+    opacity:0; transform:translateY(4px); transition:background .12s, color .12s, opacity .18s ease, transform .26s cubic-bezier(.2,.8,.2,1); }
+  .wproj.on .wpo { opacity:1; transform:none; }
+  .wproj.on .wpo:nth-child(2) { transition-delay:0s, 0s, .02s, .02s; } .wproj.on .wpo:nth-child(3) { transition-delay:0s, 0s, .04s, .04s; }
+  .wproj.on .wpo:nth-child(4) { transition-delay:0s, 0s, .06s, .06s; } .wproj.on .wpo:nth-child(5) { transition-delay:0s, 0s, .08s, .08s; }
+  .wproj .wpo:hover, .wproj .wpo:focus { background:var(--hover); color:var(--text); }
+  .wproj .wpo .t { flex:1; display:flex; flex-direction:column; line-height:1.25; } .wproj .wpo small { color:var(--mute); font-size:10.5px; }
+  .wproj .wpo .ok { width:12px; height:12px; stroke:var(--accent); stroke-width:1.8; opacity:0; transform:scale(.6); transition:opacity .15s, transform .25s cubic-bezier(.2,.8,.2,1); }
+  .wproj .wpo[aria-selected="true"] { color:var(--text); box-shadow:inset 2px 0 0 var(--accent); } .wproj .wpo[aria-selected="true"] .vg { stroke:var(--accent); }
+  .wproj .wpo[aria-selected="true"] .ok { opacity:1; transform:none; }
+  @media (max-width:600px) { .wproj { position:relative; left:auto; bottom:auto; align-self:flex-start; margin:0 0 10px 12px; } }
   .fv { cursor:pointer; border-radius:3px; } .fv:hover { color:var(--accent); text-decoration:underline dotted; text-underline-offset:3px; } .fv.on { background:color-mix(in srgb, currentColor 14%, transparent); box-shadow:0 0 0 1px color-mix(in srgb, currentColor 45%, transparent); padding:0 3px; }
   .fhide { display:none !important; } svg.pick .b { cursor:pointer; }
-  .glegend { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--dim); }
-  .glegend i { width:90px; height:8px; border-radius:4px; display:inline-block; }
+  .glegend { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--dim); white-space:nowrap; }
+  .glegend i { width:80px; height:8px; border-radius:4px; display:inline-block; box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--line2) 60%, transparent);
+    background:linear-gradient(90deg, color-mix(in oklab, var(--s1) 30%, var(--mapland)), var(--s1)); }
+  .glegend b { font-weight:500; color:var(--text); margin-left:4px; font-variant-numeric:tabular-nums; }
   #dec-rows td, #off-rows td { font-size:12px; padding:6px 12px; } #dec-rows td.meta { max-width:14em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* splash: once per browser tab, at least 1 s, fades into the board */
   #splash { display:none; }
@@ -1687,9 +1712,9 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
 
 
 <div class="grid fill" data-min="380" style="margin-top:12px">
-  <div class="card chart" style="margin:0;position:relative"><div class="hd"><span class="ttl" id="map-ttl">Where hits come from</span><span class="meta" data-rl="edge"></span><span class="spacer"></span><span class="glegend" id="map-leg"></span></div>
+  <div class="card chart mapcard" style="margin:0;position:relative"><div class="hd"><span class="ttl" id="map-ttl">Where hits come from</span><span class="meta" data-rl="edge"></span><span class="spacer"></span><span class="glegend" id="map-leg"></span></div>
     <div class="wmap" id="wmap"><span class="meta">Loading map…</span></div>
-    <select class="wproj" id="wproj" title="Map projection (saved in this browser)" aria-label="Map projection"><option value="">Flat</option><option value="equalearth">Equal Earth</option><option value="naturalearth">Natural Earth</option><option value="mercator">Mercator</option><option value="globe">Globe</option></select></div>
+    <div class="wproj" id="wproj"></div></div>
   <div class="card list fillme" style="margin:0">
     <div class="hd" style="padding:12px 16px 8px;display:flex;gap:8px;align-items:center"><span class="ttl">Active decisions</span><span class="meta">bans on any node, grouped by IP</span></div>
     {% set dec = {} %}
@@ -3015,9 +3040,10 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
   // ---- world map: hits per country, one-hue sequential (log scale), click = filter the hits table ----
   let world = null, worldP = null;
   // world.json is plate carrée: x = (lon + 180) · 1000/360, y = (83 − lat) · 460/141 (Natural Earth 110m, no Antarctica).
-  // Other projections are made in the browser: undo that, cut rings at the antimeridian (rings that cross it come
-  // twice, shifted by ±1000), add points along long edges so they bend with the projection, then fit to 1000 wide.
+  // Every view is drawn in the browser from the same lon/lat rings (cut at the antimeridian, a point every 2° or less so
+  // edges bend), so any two views share their points and can be morphed into each other frame by frame.
   const PROJ = Object.assign(Object.create(null), {
+    flat: (l, p) => [l, p * 1.1745],  // the aspect world.json was drawn at
     equalearth: (l, p) => { const M = Math.sqrt(3) / 2, t = Math.asin(M * Math.sin(p)), t2 = t * t, t6 = t2 * t2 * t2;
       return [l * Math.cos(t) / (M * (1.340264 + 3 * -0.081106 * t2 + t6 * (7 * 0.000893 + 9 * 0.003796 * t2))), t * (1.340264 + -0.081106 * t2 + t6 * (0.000893 + 0.003796 * t2))]; },
     naturalearth: (l, p) => { const p2 = p * p, p4 = p2 * p2;
@@ -3025,7 +3051,16 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
     mercator: (l, p) => [l, Math.log(Math.tan(Math.PI / 4 + p / 2))],
     globe: true,
   });
-  const projCache = {};
+  const VIEWS = [["flat", "Flat", "Plate carrée"], ["equalearth", "Equal Earth", "True areas"], ["naturalearth", "Natural Earth", "Rounded, balanced"],
+    ["mercator", "Mercator", "Web-map shapes"], ["globe", "Globe", "Drag to spin"]];
+  const VGLYPH = {
+    flat: '<rect x="2" y="4" width="14" height="10" rx="1.5"/><path d="M2 9h14M9 4v10"/>',
+    equalearth: '<path d="M5 4h8c3.2 2.8 3.2 7.2 0 10H5C1.8 11.2 1.8 6.8 5 4z"/><path d="M1.9 9h14.2M9 4v10"/>',
+    naturalearth: '<path d="M4.6 4.2h8.8c3.5 1.6 3.5 8 0 9.6H4.6C1.1 12.2 1.1 5.8 4.6 4.2z"/><path d="M1.9 9h14.2"/>',
+    mercator: '<rect x="3.5" y="1.5" width="11" height="15" rx="1.5"/><path d="M3.5 9h11M3.5 5.6h11M3.5 12.4h11"/>',
+    globe: '<circle cx="9" cy="9" r="7"/><ellipse cx="9" cy="9" rx="3" ry="7"/><path d="M2 9h14"/>',
+  };
+  const vname = v => PROJ[v] ? v : "flat";
   let llCache = null;
   function llRings() {  // world.json back to lon/lat: cut at ±180°, points every 2° or less so edges bend with the projection
     if (llCache) return llCache;
@@ -3042,101 +3077,231 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
     return llCache = Object.fromEntries(Object.entries(world.paths).map(([cc, d]) => [cc, (d.match(/M[^M]*/g) || [])
       .map(r => clip(clip((r.match(/-?[\d.]+,-?[\d.]+/g) || []).map(p => ll(...p.split(",").map(Number))), true), false)).filter(r => r.length > 2).map(dense)]));
   }
-  function projWorld(name) {
-    const f = PROJ[name]; if (!f) return {w: world.w, h: world.h, paths: world.paths};
-    if (name === "globe") return {w: GW, h: GH, globe: true};
-    if (projCache[name]) return projCache[name];
-    const R = Math.PI / 180, P = (lon, lat) => { const [x, y] = f(lon * R, Math.max(-85, Math.min(85, lat)) * R); return [x, -y]; };
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    const add = pts => pts.forEach(([x, y]) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); });
-    const rings = Object.fromEntries(Object.entries(llRings()).map(([cc, rs]) => [cc, rs.map(r => { const q = r.map(p => P(...p)); add(q); return q; })]));
-    const frame = [];  // the edge of the map: ±180° meridians and the 83°N / 58°S cut
-    for (let lat = 83; lat >= -58; lat -= 1) frame.push(P(180, lat));
-    for (let lon = 180; lon >= -180; lon -= 2) frame.push(P(lon, -58));
-    for (let lat = -58; lat <= 83; lat += 1) frame.push(P(-180, lat));
-    for (let lon = -180; lon <= 180; lon += 2) frame.push(P(lon, 83));
-    add(frame);
-    const pad = 4, s = (world.w - 2 * pad) / (x1 - x0), h = Math.round((y1 - y0) * s + 2 * pad);
-    const xy = ([x, y]) => `${((x - x0) * s + pad).toFixed(1)},${((y - y0) * s + pad).toFixed(1)}`;
-    return projCache[name] = {w: world.w, h, frame: frame.map(xy).join(" "),
-      paths: Object.fromEntries(Object.entries(rings).map(([cc, rs]) => [cc, rs.map(r => "M" + r.map(xy).join("L") + "Z").join("")]))};
+  // The map's outer edge as one lon/lat ring. g (0 = flat, 1 = globe) opens the 83°N / 58°S cut out to the poles.
+  function frameLL(g) {
+    const n = 83 + 7 * g, s = -58 - 32 * g, out = [], A = 140, O = 180;
+    for (let i = 0; i < A; i++) out.push([180, n + (s - n) * i / A]);
+    for (let i = 0; i < O; i++) out.push([180 - 360 * i / O, s]);
+    for (let i = 0; i < A; i++) out.push([-180, s + (n - s) * i / A]);
+    for (let i = 0; i < O; i++) out.push([-180 + 360 * i / O, n]);
+    return out;
   }
-  // Globe: orthographic, drag to spin. Rings are cut at the horizon in 3D and closed along its edge.
-  const GW = 1000, GH = 600, GR = 285;
+  // A flat view: f(lon°, lat°) → [x, y] fitted to 1000 wide, h tall; xy = every ring's points, projected once.
+  const projCache = {};
+  function flatProj(name) {
+    if (projCache[name]) return projCache[name];
+    const raw = PROJ[name], R = Math.PI / 180, lim = name === "mercator" ? 85 : 90;
+    const P = (lon, lat) => { const q = raw(lon * R, Math.max(-lim, Math.min(lim, lat)) * R); return [q[0], -q[1]]; };
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    const add = ([x, y]) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
+    Object.values(llRings()).forEach(rs => rs.forEach(r => r.forEach(p => add(P(...p))))); frameLL(0).forEach(p => add(P(...p)));
+    const pad = 4, s = (GW - 2 * pad) / (x1 - x0), h = (y1 - y0) * s + 2 * pad;
+    const f = (lon, lat) => { const q = P(lon, lat); return [(q[0] - x0) * s + pad, (q[1] - y0) * s + pad]; };
+    return projCache[name] = {f, h, xy: Object.fromEntries(Object.entries(llRings()).map(([cc, rs]) => [cc, rs.map(r => {
+      const a = new Float32Array(r.length * 2); r.forEach((p, i) => { const q = f(...p); a[2 * i] = q[0]; a[2 * i + 1] = q[1]; }); return a; })]))};
+  }
+  function mixProj(A, B, k) {  // a still frame of a half-done flat morph, so a new one can start from it
+    if (k <= 0) return A; if (k >= 1) return B;
+    const m = (a, b) => a + (b - a) * k;
+    return {h: m(A.h, B.h), f: (lon, lat) => { const a = A.f(lon, lat), b = B.f(lon, lat); return [m(a[0], b[0]), m(a[1], b[1])]; },
+      xy: Object.fromEntries(Object.keys(A.xy).map(cc => [cc, A.xy[cc].map((a, i) => a.map((v, j) => m(v, B.xy[cc][i][j])))]))};
+  }
+  // Globe: orthographic, 1000 × 600, radius 285. Between a flat view and the globe every point is blended
+  // (1 − g)·flat + g·globe while the visible cap shrinks from the whole sphere (180°) to a hemisphere (90°), like
+  // peeling the map onto a ball. Rings are cut at the cap's edge in 3D and closed along it.
+  const GW = 1000, GH = 600, GR = 285, D2R = Math.PI / 180;
   let gRot = null;  // [lon, lat] facing the viewer; starts on the country with the most hits
-  function globePaths(rot) {
-    const R = Math.PI / 180, l0 = rot[0] * R, f0 = rot[1] * R, s0 = Math.sin(f0), c0 = Math.cos(f0), cx = GW / 2, cy = GH / 2;
-    const v3 = (lon, lat) => { const l = lon * R - l0, f = lat * R, cf = Math.cos(f);
+  const mapS = {A: null, B: null, k: 0, g: 0, rot: [0, 0], view: null};  // what's on screen: flat A→B by k, then g toward the globe
+  const r1 = n => Math.round(n * 10) / 10;
+  function mapRender(svg) {
+    const S = mapS, {A, B, k, g} = S, H = (A.h + (B.h - A.h) * k) * (1 - g) + GH * g;
+    svg.setAttribute("viewBox", `0 0 ${GW} ${r1(H)}`);
+    const flatAt = (cc, ri, i) => { const a = A.xy[cc][ri]; if (!k) return [a[2 * i], a[2 * i + 1]]; const b = B.xy[cc][ri];
+      return [a[2 * i] + (b[2 * i] - a[2 * i]) * k, a[2 * i + 1] + (b[2 * i + 1] - a[2 * i + 1]) * k]; };
+    const F = k ? (lon, lat) => { const a = A.f(lon, lat), b = B.f(lon, lat); return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k]; } : A.f;
+    const sph = $(".sph", svg), gr = $(".grat", svg), sh = $(".shade", svg), rings = llRings(), paths = $$("path[data-cc]", svg);
+    if (!g) {
+      paths.forEach(p => { const cc = p.dataset.cc;
+        p.setAttribute("d", (rings[cc] || []).map((r, ri) => { let d = ""; for (let i = 0; i < r.length; i++) { const q = flatAt(cc, ri, i); d += (i ? "L" : "M") + r1(q[0]) + "," + r1(q[1]); } return d + "Z"; }).join("")); });
+      sph.setAttribute("d", "M" + frameLL(0).map(p => F(...p).map(r1).join(",")).join("L") + "Z");
+      gr.setAttribute("d", ""); gr.style.opacity = 0; sh.style.opacity = 0; svg.classList.remove("globe"); return;
+    }
+    // 3D, rotated so rot faces the viewer (x right, y up, z toward us). Mid-morph rot is [0, 0], so lon/lat come straight back out.
+    const l0 = S.rot[0] * D2R, s0 = Math.sin(S.rot[1] * D2R), c0 = Math.cos(S.rot[1] * D2R), c = g >= 1 ? 0 : Math.cos((180 - 90 * g) * D2R), rr = Math.sqrt(1 - c * c);
+    const v3 = (lon, lat) => { const l = lon * D2R - l0, f = lat * D2R, cf = Math.cos(f);
       return [cf * Math.sin(l), c0 * Math.sin(f) - s0 * cf * Math.cos(l), s0 * Math.sin(f) + c0 * cf * Math.cos(l)]; };
-    const xy = p => `${(cx + GR * p[0]).toFixed(1)},${(cy - GR * p[1]).toFixed(1)}`;
-    const cut = (a, b) => { const t = a[2] / (a[2] - b[2]), x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t, n = Math.hypot(x, y) || 1; return [x / n, y / n, 0]; };
+    const O = v => [GW / 2 + GR * v[0], GH / 2 - GR * v[1]];
+    const at = (v, fl) => { const o = O(v); if (g >= 1) return o;
+      fl = fl || F(Math.atan2(v[0], v[2]) / D2R, Math.asin(Math.max(-1, Math.min(1, v[1]))) / D2R);
+      return [fl[0] + (o[0] - fl[0]) * g, fl[1] + (o[1] - fl[1]) * g]; };
+    const cut = (a, b) => { const t = (a[2] - c) / (a[2] - b[2]), x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t, n = Math.hypot(x, y) || 1; return [x / n * rr, y / n * rr, c]; };
+    // Close a cut ring along the cap's edge. Mid-morph both ends are on one side of the antimeridian (rings are cut there),
+    // so the arc goes round that side; on the resting globe the shorter way is always right.
     const arc = (a, b, out) => { const t0 = Math.atan2(a[1], a[0]); let d = Math.atan2(b[1], b[0]) - t0;
-      d -= 2 * Math.PI * Math.round(d / (2 * Math.PI)); const k = Math.ceil(Math.abs(d) / 0.08);
-      for (let j = 1; j < k; j++) out.push([Math.cos(t0 + d * j / k), Math.sin(t0 + d * j / k), 0]); };
-    const ring = r => {
-      const v = r.map(p => v3(...p)); if (v.every(p => p[2] >= 0)) return "M" + v.map(xy).join("L") + "Z";
-      const out = []; let exit = -1;
+      d -= 2 * Math.PI * Math.round(d / (2 * Math.PI));
+      if (g < 1 && Math.sign(a[0]) === Math.sign(b[0]) && Math.sign(Math.cos(t0 + d / 2)) !== Math.sign(a[0])) d -= Math.sign(d) * 2 * Math.PI;
+      const n = Math.ceil(Math.abs(d) * rr / 0.04);
+      for (let j = 1; j < n; j++) out.push({v: [rr * Math.cos(t0 + d * j / n), rr * Math.sin(t0 + d * j / n), c]}); };
+    const ring = (r, fl) => {  // r: lon/lat points, fl(i): that point's flat position
+      const v = r.map(p => v3(...p)), xy = (q, i) => { const p = at(q, fl && i >= 0 && g < 1 ? fl(i) : null); return r1(p[0]) + "," + r1(p[1]); };
+      if (v.every(q => q[2] >= c)) return "M" + v.map(xy).join("L") + "Z";
+      const out = []; let exit = -1, first = -1;
       v.forEach((q, i) => { const pr = v[(i + v.length - 1) % v.length];
-        if (q[2] >= 0) { if (pr[2] < 0) { const e = cut(pr, q); if (exit >= 0) arc(out[exit], e, out); else out.first = out.length; out.push(e); } out.push(q); }
-        else if (pr[2] >= 0) { out.push(cut(pr, q)); exit = out.length - 1; } });
+        if (q[2] >= c) { if (pr[2] < c) { const e = cut(pr, q); if (exit >= 0) arc(out[exit].v, e, out); else first = out.length; out.push({v: e}); } out.push({v: q, i}); }
+        else if (pr[2] >= c) { out.push({v: cut(pr, q)}); exit = out.length - 1; } });
       if (!out.length) return "";
-      if (exit >= 0 && out.first !== undefined) { const tail = []; arc(out[exit], out[out.first], tail); out.splice(exit + 1, 0, ...tail); }
-      return "M" + out.map(xy).join("L") + "Z";
+      if (exit >= 0 && first >= 0) { const tail = []; arc(out[exit].v, out[first].v, tail); out.splice(exit + 1, 0, ...tail); }
+      return "M" + out.map(o => xy(o.v, o.i === undefined ? -1 : o.i)).join("L") + "Z";
     };
-    const line = pts => { let d = "", on = false; pts.forEach(p => { const q = v3(...p); if (q[2] >= 0) { d += (on ? "L" : "M") + xy(q); on = true; } else on = false; }); return d; };
+    paths.forEach(p => { const cc = p.dataset.cc; p.setAttribute("d", (rings[cc] || []).map((r, ri) => ring(r, i => flatAt(cc, ri, i))).join("")); });
+    sph.setAttribute("d", g >= 1 ? `M${GW / 2 - GR},${GH / 2}a${GR},${GR} 0 1,0 ${2 * GR},0a${GR},${GR} 0 1,0 ${-2 * GR},0Z` : ring(frameLL(g), null));
+    const line = pts => { let d = "", on = false; pts.forEach(p => { const q = v3(...p); if (q[2] >= c) { const o = at(q); d += (on ? "L" : "M") + r1(o[0]) + "," + r1(o[1]); on = true; } else on = false; }); return d; };
     const grat = [];
     for (let lon = -180; lon < 180; lon += 30) grat.push(line(Array.from({length: 61}, (_, i) => [lon, -90 + i * 3])));
     for (let lat = -60; lat <= 60; lat += 30) grat.push(line(Array.from({length: 121}, (_, i) => [-180 + i * 3, lat])));
-    return {grat: grat.join(""), paths: Object.fromEntries(Object.entries(llRings()).map(([cc, rs]) => [cc, rs.map(ring).join("")]))};
+    gr.setAttribute("d", grat.join("")); gr.style.opacity = .6 * g; sh.style.opacity = Math.max(0, (g - .6) / .4);
+    svg.classList.toggle("globe", g >= 1);
   }
-  function globeRedraw(svg) {
-    const g = globePaths(gRot), gr = $(".grat", svg); if (gr) gr.setAttribute("d", g.grat);
-    $$("path[data-cc]", svg).forEach(p => p.setAttribute("d", g.paths[p.dataset.cc] || ""));
+  // ---- motion: one chain at a time; a new pick, a drag or a click on the globe cancels whatever is running
+  let mapTok = 0, mapRaf = 0;
+  const stillMotion = () => document.documentElement.classList.contains("nomotion") || matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const inOut = u => u < .5 ? 4 * u * u * u : 1 - Math.pow(-2 * u + 2, 3) / 2, outE = u => 1 - Math.pow(1 - u, 3);
+  function mapTween(ms, step, ease = inOut) {
+    const tok = mapTok, svg = $("#wmap svg");
+    if (!svg) return Promise.resolve(false);
+    if (stillMotion()) { step(1); mapRender(svg); return Promise.resolve(true); }
+    return new Promise(res => { const t0 = performance.now();
+      const f = now => { if (tok !== mapTok || !svg.isConnected) return res(false);
+        const u = Math.min(1, (now - t0) / ms); step(ease(u)); mapRender(svg);
+        if (u < 1) mapRaf = requestAnimationFrame(f); else res(true); };
+      mapRaf = requestAnimationFrame(f); });
   }
-  function globeStart(svg, c) {  // first time: face the busiest country; then drag (mouse, pen, sideways on touch) to spin
-    if (!gRot) { const top = Object.entries(c).sort((a, b) => b[1] - a[1])[0], rs = top && llRings()[top[0]];
-      const big = rs && rs.slice().sort((a, b) => b.length - a.length)[0];
-      gRot = big ? [big.reduce((a, p) => a + p[0], 0) / big.length, Math.max(-30, Math.min(40, big.reduce((a, p) => a + p[1], 0) / big.length))] : [10, 20]; }
-    globeRedraw(svg);
+  const rotLerp = (a, b, e) => [a[0] + (((b[0] - a[0]) % 360 + 540) % 360 - 180) * e, a[1] + (b[1] - a[1]) * e];
+  const wrapLon = l => ((l % 360) + 540) % 360 - 180;
+  function ccCenter(cc) {  // middle of a country's biggest ring
+    const rs = llRings()[cc], big = rs && rs.slice().sort((a, b) => b.length - a.length)[0];
+    return big ? [big.reduce((a, p) => a + p[0], 0) / big.length, Math.max(-60, Math.min(60, big.reduce((a, p) => a + p[1], 0) / big.length))] : null;
+  }
+  function globeAim() {  // where the globe should face: where it was left, else the busiest country
+    if (gRot) return gRot;
+    const svg = $("#wmap svg"), top = svg && svg._c && Object.entries(svg._c).sort((a, b) => b[1] - a[1])[0];
+    return gRot = (top && ccCenter(top[0])) || [10, 20];
+  }
+  async function mapGo(view) {
+    const S = mapS; mapTok++; cancelAnimationFrame(mapRaf); S.view = view;
+    if (view === "globe") {
+      S.A = S.B = mixProj(S.A, S.B, S.k); S.k = 0;
+      if (S.g < 1) { const g0 = S.g; if (!await mapTween(900 - 300 * g0, e => S.g = g0 + (1 - g0) * e)) return; }
+      const a = S.rot.slice(), b = globeAim();
+      if (await mapTween(750, e => S.rot = rotLerp(a, b, e), outE)) S.rot = [wrapLon(S.rot[0]), S.rot[1]];
+      return;
+    }
+    const X = flatProj(view);
+    if (S.g >= 1 && (S.rot[0] || S.rot[1])) { const a = S.rot.slice(); if (!await mapTween(550, e => S.rot = rotLerp(a, [0, 0], e))) return; S.rot = [0, 0]; }
+    const from = S.g >= 1 ? X : mixProj(S.A, S.B, S.k), g0 = S.g;
+    S.A = from; S.B = X; S.k = 0;
+    if (from === X && !g0) return;
+    if (await mapTween(g0 ? 900 : 700, e => { S.g = g0 * (1 - e); S.k = from === X ? 0 : e; })) { S.A = S.B = X; S.k = 0; S.g = 0; }
+  }
+  function globeTurn(to) {  // ease the globe round to face [lon, lat]
+    if (mapS.g < 1) return; mapTok++; cancelAnimationFrame(mapRaf);
+    const a = mapS.rot.slice(); mapTween(800, e => mapS.rot = rotLerp(a, to, e), outE).then(ok => { if (ok) gRot = mapS.rot = [wrapLon(mapS.rot[0]), mapS.rot[1]]; });
+  }
+  function globeDrag(svg) {  // drag (mouse, pen, sideways on touch) to spin; let go while moving and it keeps turning, slowing down
     let st = null, raf = 0;
-    svg.addEventListener("pointerdown", ev => { if (ev.button) return; st = {x: ev.clientX, y: ev.clientY, r: gRot.slice(), id: ev.pointerId, moved: false}; });
+    const draw = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; mapRender(svg); }); };
+    svg.addEventListener("pointerdown", ev => { if (ev.button || mapS.g < 1) return; mapTok++; cancelAnimationFrame(mapRaf);
+      st = {x: ev.clientX, y: ev.clientY, r: mapS.rot.slice(), id: ev.pointerId, moved: false, hist: []}; });
     svg.addEventListener("pointermove", ev => { if (!st || ev.pointerId !== st.id) return;
       const dx = ev.clientX - st.x, dy = ev.clientY - st.y;
       if (!st.moved && Math.hypot(dx, dy) < 4) return;
       if (!st.moved) { st.moved = true; svg._drag = true; svg.setPointerCapture(st.id); svg.classList.add("drag"); hideTip(); }
       const k = 180 / Math.PI / (GR * svg.getBoundingClientRect().width / GW);
-      gRot = [((st.r[0] - dx * k) % 360 + 540) % 360 - 180, Math.max(-80, Math.min(80, st.r[1] + dy * k))];
-      if (!raf) raf = requestAnimationFrame(() => { raf = 0; globeRedraw(svg); }); });
-    const end = () => { if (!st) return; if (st.moved) setTimeout(() => svg._drag = false, 0); st = null; svg.classList.remove("drag"); };
+      mapS.rot = [wrapLon(st.r[0] - dx * k), Math.max(-80, Math.min(80, st.r[1] + dy * k))];
+      const now = performance.now(); st.hist.push([now, mapS.rot[0], mapS.rot[1]]); while (st.hist.length > 2 && now - st.hist[0][0] > 80) st.hist.shift();
+      draw(); });
+    const end = ev => { if (!st) return; const s = st; st = null; svg.classList.remove("drag");
+      if (!s.moved) return; setTimeout(() => svg._drag = false, 0); gRot = mapS.rot.slice();
+      const h = s.hist, a = h[0], b = h[h.length - 1], dt = b && b[0] - a[0];
+      if (ev.type === "pointercancel" || !dt || performance.now() - b[0] > 60 || stillMotion()) return;
+      let vx = (((b[1] - a[1]) % 360 + 540) % 360 - 180) / dt, vy = (b[2] - a[2]) / dt, t = performance.now(); const tok = mapTok;
+      const spin = now => { if (tok !== mapTok || !svg.isConnected) return; const d = Math.min(40, now - t); t = now;
+        mapS.rot = [wrapLon(mapS.rot[0] + vx * d), Math.max(-80, Math.min(80, mapS.rot[1] + vy * d))]; gRot = mapS.rot.slice();
+        const f = Math.exp(-d / 380); vx *= f; vy *= f; mapRender(svg);
+        if (Math.hypot(vx, vy) > .004) mapRaf = requestAnimationFrame(spin); };
+      if (Math.hypot(vx, vy) > .02) mapRaf = requestAnimationFrame(spin); };
     svg.addEventListener("pointerup", end); svg.addEventListener("pointercancel", end);
     svg.addEventListener("click", ev => { if (svg._drag) ev.stopImmediatePropagation(); }, true);  // a drag isn't a click on a country
   }
-  document.addEventListener("change", ev => { if (ev.target.id !== "wproj") return;
-    cust.proj = PROJ[ev.target.value] ? ev.target.value : undefined; custSave();
-    const box = $("#wmap"); if (box) box.innerHTML = ""; drawMap(); });
+  // ---- the view picker: a button + a menu that grows out of it; ↑/↓/Home/End move, Enter/Space pick, Esc closes. Saved per browser.
+  function pickerBuild() {
+    const box = $("#wproj"); if (!box || box.firstChild) return;
+    const ic = v => `<svg class="vg" viewBox="0 0 18 18" aria-hidden="true">${VGLYPH[v]}</svg>`, cur = vname(cust.proj);
+    box.innerHTML = `<button type="button" class="wpb" aria-haspopup="listbox" aria-expanded="false" title="Map view (saved in this browser)">${ic(cur)}<span>${VIEWS.find(v => v[0] === cur)[1]}</span><svg class="chev" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 6.5 5 3.5 8 6.5"/></svg></button>`
+      + `<div class="wpm" role="listbox" aria-label="Map view">${VIEWS.map(([v, n, d]) => `<div class="wpo" role="option" tabindex="-1" data-v="${v}" aria-selected="${v === cur}">${ic(v)}<span class="t">${n}<small>${d}</small></span><svg class="ok" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6.5 5 9 9.5 3.5"/></svg></div>`).join("")}</div>`;
+  }
+  const pickerOpen = (on, focus) => { const box = $("#wproj"); if (!box || !box.firstChild) return; box.classList.toggle("on", on); $(".wpb", box).setAttribute("aria-expanded", on);
+    if (on && focus) ($('.wpo[aria-selected="true"]', box) || $(".wpo", box)).focus(); };
+  function pickerSet(v) {
+    const box = $("#wproj"); v = vname(v);
+    cust.proj = v === "flat" ? undefined : v; custSave();
+    $$(".wpo", box).forEach(o => o.setAttribute("aria-selected", o.dataset.v === v));
+    const b = $(".wpb", box); $(".vg", b).innerHTML = VGLYPH[v]; $("span", b).textContent = VIEWS.find(x => x[0] === v)[1];
+    if (mapS.A && v !== mapS.view) mapGo(v);
+  }
+  document.addEventListener("click", ev => {
+    const box = $("#wproj"); if (!box || !box.firstChild) return;
+    const o = ev.target.closest("#wproj .wpo"), b = ev.target.closest("#wproj .wpb");
+    if (o) { pickerSet(o.dataset.v); pickerOpen(false); $(".wpb", box).focus(); }
+    else if (b) pickerOpen(!box.classList.contains("on"), ev.detail === 0);
+    else if (!box.contains(ev.target)) pickerOpen(false);
+  });
+  document.addEventListener("keydown", ev => {
+    const box = ev.target.closest && ev.target.closest("#wproj"); if (!box) return;
+    const os = $$(".wpo", box), i = os.indexOf(document.activeElement), open = box.classList.contains("on");
+    const go = j => { ev.preventDefault(); ev.stopPropagation(); os[(j + os.length) % os.length].focus(); };
+    if (ev.key === "Escape" && open) { ev.preventDefault(); ev.stopPropagation(); pickerOpen(false); $(".wpb", box).focus(); }
+    else if (!open && /^(ArrowDown|ArrowUp)$/.test(ev.key)) { ev.preventDefault(); ev.stopPropagation(); pickerOpen(true, true); }
+    else if (open && ev.key === "ArrowDown") go(i + 1);
+    else if (open && ev.key === "ArrowUp") go(i < 0 ? os.length - 1 : i - 1);
+    else if (open && ev.key === "Home") go(0);
+    else if (open && ev.key === "End") go(os.length - 1);
+    else if (open && i >= 0 && (ev.key === "Enter" || ev.key === " ")) { ev.preventDefault(); ev.stopPropagation(); pickerSet(os[i].dataset.v); pickerOpen(false); $(".wpb", box).focus(); }
+    else if (open && ev.key === "Tab") pickerOpen(false);
+  });
+  document.addEventListener("focusout", ev => { const box = $("#wproj"); if (box && box.contains(ev.target) && ev.relatedTarget && !box.contains(ev.relatedTarget)) pickerOpen(false); });
   function drawMap() {
     const box = $("#wmap"), e = eser(); if (!box || !box.clientWidth || !e) return;
     if (!world) { worldP = worldP || fetch("/static/world.json?v=3").then(r => r.json()).then(w => { world = w; drawMap(); }).catch(() => box.innerHTML = '<span class="meta">Map failed to load.</span>'); return; }
-    const ps = $("#wproj"); if (ps) ps.value = PROJ[cust.proj] ? cust.proj : "";
+    pickerBuild();
+    const c = Object.fromEntries((e.top.cn_all || e.top.cn || []).map(([k, n]) => [k, n]));
     let svg = $("svg", box);
-    if (!svg) { const m = projWorld(cust.proj);
-      box.innerHTML = `<svg viewBox="0 0 ${m.w} ${m.h}" role="img" aria-label="Hits per country"${m.globe ? ' class="globe"' : ""}>${m.frame ? `<polygon class="sph" points="${m.frame}"/>` : ""}`
-        + (m.globe ? `<defs><radialGradient id="wglobe-shade" cx="42%" cy="38%" r="62%"><stop offset="55%" stop-color="#000" stop-opacity="0"/><stop offset="100%" stop-color="#000" stop-opacity=".28"/></radialGradient></defs><circle class="sph" cx="${GW / 2}" cy="${GH / 2}" r="${GR}"/><path class="grat"/>` : "")
-        + Object.keys(world.paths).map(cc => `<path data-cc="${cc}" d="${m.paths ? m.paths[cc] : ""}"/>`).join("")
-        + (m.globe ? `<circle class="shade" cx="${GW / 2}" cy="${GH / 2}" r="${GR}" fill="url(#wglobe-shade)"/>` : "") + "</svg>"; svg = $("svg", box);
+    if (!svg) {
+      box.innerHTML = `<svg viewBox="0 0 ${GW} 500" role="img" aria-label="Hits per country"><defs><radialGradient id="wglobe-shade" cx="42%" cy="38%" r="62%"><stop offset="55%" stop-color="#000" stop-opacity="0"/><stop offset="100%" stop-color="#000" stop-opacity=".28"/></radialGradient></defs>`
+        + `<path class="sph"/><path class="grat"/>` + Object.keys(world.paths).map(cc => `<path data-cc="${cc}"/>`).join("")
+        + `<circle class="shade" cx="${GW / 2}" cy="${GH / 2}" r="${GR}" fill="url(#wglobe-shade)"/></svg>`; svg = $("svg", box); svg._c = c;
       const hov = cc => $$("path[data-cc]", svg).forEach(p => { const on = p.dataset.cc === cc; if (on !== p.classList.contains("hov")) { p.classList.toggle("hov", on); on && svg.insertBefore(p, $(".shade", svg)); } });
       svg.addEventListener("mousemove", ev => { if (svg._drag) return; const p = ev.target.closest("path[data-cc]"); if (!p) { hov(null); return hideTip(); } const cc = p.dataset.cc; hov(cc);
         showTip(ev, `${cname(cc)} (${cc})`, [[emode === "all" ? "requests" : "hits", svg._c[cc] || 0, css("--s1")]]); });
       svg.addEventListener("mouseleave", () => { hov(null); hideTip(); });
-      svg.addEventListener("click", ev => { const p = ev.target.closest("path[data-cc]"); if (p) toggleTok("edge", "cn:" + p.dataset.cc); });
-      if (m.globe) globeStart(svg, Object.fromEntries((e.top.cn_all || e.top.cn || []).map(([k, n]) => [k, n]))); }
+      svg.addEventListener("click", ev => { const p = ev.target.closest("path[data-cc]"); if (!p) return; toggleTok("edge", "cn:" + p.dataset.cc);
+        if (mapS.view === "globe" && mapS.g >= 1) { const to = ccCenter(p.dataset.cc); to && globeTurn(to); } });
+      globeDrag(svg);
+      // first draw: the saved view, no morph; the globe swings round to the busiest country
+      const v = vname(cust.proj), base = flatProj(v === "globe" ? "flat" : v);
+      Object.assign(mapS, {A: base, B: base, k: 0, g: v === "globe" ? 1 : 0, view: v, rot: [0, 0]});
+      if (v === "globe") { const to = globeAim(); mapS.rot = stillMotion() ? to.slice() : [wrapLon(to[0] + 70), to[1] * .3]; mapRender(svg); globeTurn(to); }
+      else mapRender(svg);
+    }
     markMap();
     if (svg._d === e) return; svg._d = e;
-    const c = Object.fromEntries((e.top.cn_all || e.top.cn || []).map(([k, n]) => [k, n])), max = Math.max(1, ...Object.values(c)), L = Math.log(max + 1);
+    const max = Math.max(1, ...Object.values(c)), L = Math.log(max + 1), unit = emode === "all" ? "requests" : "hits";
     svg._c = c;
     $$("path[data-cc]", svg).forEach(p => { const n = c[p.dataset.cc] || 0;
       p.style.fill = n ? `color-mix(in oklab, var(--s1) ${Math.round(30 + 70 * Math.log(n + 1) / L)}%, var(--mapland))` : ""; });
-    $("#map-leg").innerHTML = `1<i style="background:linear-gradient(90deg, color-mix(in oklab, var(--s1) 30%, var(--mapland)), var(--s1))"></i>${max.toLocaleString()} ${emode === "all" ? "requests" : "hits"}`;
+    const top = Object.entries(c).sort((a, b) => b[1] - a[1])[0];
+    $("#map-leg").innerHTML = Object.keys(c).length ? `<span>Fewer</span><i aria-hidden="true"></i><span>More</span><b title="${esc(top ? cname(top[0]) : "")}">${max.toLocaleString()} ${unit} max</b>` : "";
+    $("#map-leg").title = `Country colour by ${unit} in the range (log scale) · busiest: ${top ? `${cname(top[0])}, ${top[1].toLocaleString()}` : "none"}`;
   }
 
   // ---- repeat offenders (lazy; the server caches 10 min) ----
@@ -3901,6 +4066,7 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
     const prev = snapshot(meta), sy = scrollY, gv = $("#gq").value;
     closeDD();
     const keepLogs = $('[data-panel="logs"]'), nl = next.querySelector('[data-panel="logs"]'); if (keepLogs && nl) nl.replaceWith(keepLogs);
+    for (const id of ["wmap", "wproj"]) { const k = $("#" + id), n = next.querySelector("#" + id); if (k && n && k.firstElementChild) n.replaceWith(k); }  // the map keeps its view, spin and picker
     $("#app").replaceWith(next); document.title = doc.title;
     keepBriefs(); keepSlots(); aiResume();
     const f = doc.getElementById("fav"); if (f) $("#fav").href = f.href;
@@ -4103,7 +4269,7 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
     const w = sp.where || [], ports = w.includes("ports") && !w.includes("web");
     const act = {block: ports ? "Drop" : "Block", challenge: "Challenge", reject: "Reject", allow: "Always allow"}[sp.action] || "Block";
     const p = [], lim = sp.limit;
-    if (sp.rate) { const r = sp.rate;
+    if (sp.rate) { const r = {statuses: [], paths: [], methods: [], ...sp.rate};  // suggestions from 2.9.0 boards leave the empty lists out
       return `${sp.mode === "log" ? "Alert on" : `Ban (${RLD[r.ban] || r.ban})`} any ${RLK[r.key] || r.key} ${r.kind === "resp" ? `getting over ${r.n} ${r.statuses.join("/")} answers` : `sending over ${r.n} requests`} in ${r.secs} s`
         + (r.methods.length ? ` (${r.methods.join(", ")})` : "") + (r.paths.length ? " to " + r.paths.join(", ") : "") + (has(sp, "hosts") ? " on " + sp.hosts.map(gname).join(", ") : ""); }
     if ((sp.match || []).length) p.push("requests where " + sp.match.map(condTxt).join(" and "));
@@ -4444,7 +4610,7 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
       fmask: [...((sp.flags || {}).mask || [])], fset: [...((sp.flags || {}).set || [])], icmp: [...(sp.icmp || [])], invalid: !!sp.invalid, hours: sp.hours || "",
       days: [...(sp.days || [])], dscp: (sp.dscp || []).join(", "), osf: [...(sp.osf || [])], banL: sp.ban ? String(sp.ban.list) : "", banS: sp.ban ? sp.ban.secs : 3600,
       cf: (sp.cf || []).map(c => ({...c})), exp: sp.expires ? "keep" : "", expires: sp.expires || null,
-      rate: sp.rate ? {on: true, ...sp.rate, statuses: sp.rate.statuses.join(", "), paths: sp.rate.paths.join(", "), methods: sp.rate.methods.join(", ")} : {...RATE0}});
+      rate: sp.rate ? {on: true, ...sp.rate, statuses: (sp.rate.statuses || []).join(", "), paths: (sp.rate.paths || []).join(", "), methods: (sp.rate.methods || []).join(", ")} : {...RATE0}});
     return s;
   }
   const wexp = s => s.exp === "keep" ? s.expires : s.exp ? Math.round(Date.now() / 1000 + +s.exp * 3600) : null;

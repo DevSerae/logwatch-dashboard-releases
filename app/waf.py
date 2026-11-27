@@ -1917,7 +1917,7 @@ def suggestions(con, force=False):
             add("resp404", "Ban IPs that collect many 404s", "One rule catches the next scanner by itself: 50 not-found answers in 5 minutes "
                 "per IP → 4 h ban (starts in log mode).",
                 rule={"name": "404 burst → ban", "mode": "log", "spec": {"where": ["web"], "action": "block",
-                      "rate": {"kind": "resp", "key": "ip", "n": 50, "secs": 300, "ban": "4h", "statuses": [404]}}})
+                      "rate": {"kind": "resp", "key": "ip", "n": 50, "secs": 300, "ban": "4h", "statuses": [404], "paths": [], "methods": []}}})
     except Exception as e:
         errs.append(f"404s: {e}")
     try:
@@ -1939,7 +1939,7 @@ def suggestions(con, force=False):
             add("rate", f"Rate-limit requests: {h.get('src')} sent {h.get('n')} to {h.get('target')} in the last hour",
                 "A per-IP limit stops floods and brute force without touching normal visitors (a page load is 20-80 requests).",
                 rule={"name": "Request flood → ban", "mode": "log", "spec": {"where": ["web"], "action": "block",
-                      "rate": {"kind": "rate", "key": "ip", "n": 600, "secs": 60, "ban": "1h"}}})
+                      "rate": {"kind": "rate", "key": "ip", "n": 600, "secs": 60, "ban": "1h", "statuses": [], "paths": [], "methods": []}}})
     except Exception as e:
         errs.append(f"rates: {e}")
     try:
@@ -1950,7 +1950,7 @@ def suggestions(con, force=False):
                     "Ban an IP after 20 refused logins in 10 minutes (brute force).",
                     rule={"name": f"Login brute force {r.get('target')}", "mode": "log", "spec": {"where": ["web"], "action": "block",
                           "hosts": [r.get("target")] if HOST_RE.match(str(r.get("target") or "")) else [],
-                          "rate": {"kind": "resp", "key": "ip", "n": 20, "secs": 600, "ban": "4h", "statuses": [401, 403]}}})
+                          "rate": {"kind": "resp", "key": "ip", "n": 20, "secs": 600, "ban": "4h", "statuses": [401, 403], "paths": [], "methods": []}}})
                 break
     except Exception as e:
         errs.append(f"logins: {e}")
