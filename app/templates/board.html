@@ -1102,6 +1102,8 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
   .wmap path { fill:var(--mapland); stroke:var(--panel); stroke-width:.5; stroke-linejoin:round; cursor:pointer; transition:stroke .12s; }
   .wmap path.hov { stroke:var(--text); stroke-width:1.2; }
   .wmap path.sel { stroke:var(--accent); stroke-width:1.4; }
+  .wmap svg.globe { cursor:grab; touch-action:pan-y; } .wmap svg.globe.drag, .wmap svg.globe.drag path { cursor:grabbing; }
+  .wmap path.grat { fill:none; stroke:var(--line2); stroke-width:.5; opacity:.6; pointer-events:none; } .wmap .shade { pointer-events:none; }
   .wmap .sph { fill:color-mix(in oklab, var(--mapland) 22%, transparent); stroke:var(--line2); stroke-width:.6; pointer-events:none; }
   .wproj { position:absolute; left:18px; bottom:14px; padding:1px 4px; font-size:11px; color:var(--dim); background:color-mix(in srgb, var(--panel2) 85%, transparent); }
   @media (max-width:600px) { .wproj { position:static; align-self:flex-start; margin:0 0 10px 12px; } }
@@ -1687,7 +1689,7 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
 <div class="grid fill" data-min="380" style="margin-top:12px">
   <div class="card chart" style="margin:0;position:relative"><div class="hd"><span class="ttl" id="map-ttl">Where hits come from</span><span class="meta" data-rl="edge"></span><span class="spacer"></span><span class="glegend" id="map-leg"></span></div>
     <div class="wmap" id="wmap"><span class="meta">Loading map…</span></div>
-    <select class="wproj" id="wproj" title="Map projection (saved in this browser)" aria-label="Map projection"><option value="">Flat</option><option value="equalearth">Equal Earth</option><option value="naturalearth">Natural Earth</option><option value="mercator">Mercator</option></select></div>
+    <select class="wproj" id="wproj" title="Map projection (saved in this browser)" aria-label="Map projection"><option value="">Flat</option><option value="equalearth">Equal Earth</option><option value="naturalearth">Natural Earth</option><option value="mercator">Mercator</option><option value="globe">Globe</option></select></div>
   <div class="card list fillme" style="margin:0">
     <div class="hd" style="padding:12px 16px 8px;display:flex;gap:8px;align-items:center"><span class="ttl">Active decisions</span><span class="meta">bans on any node, grouped by IP</span></div>
     {% set dec = {} %}
@@ -3028,12 +3030,13 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
     naturalearth: (l, p) => { const p2 = p * p, p4 = p2 * p2;
       return [l * (0.8707 - 0.131979 * p2 + p4 * (-0.013791 + p4 * (0.003971 * p2 - 0.001529 * p4))), p * (1.007226 + p2 * (0.015085 + p4 * (-0.044475 + 0.028874 * p2 - 0.005916 * p4)))]; },
     mercator: (l, p) => [l, Math.log(Math.tan(Math.PI / 4 + p / 2))],
+    globe: true,
   };
   const projCache = {};
-  function projWorld(name) {
-    const f = PROJ[name]; if (!f) return {w: world.w, h: world.h, paths: world.paths};
-    if (projCache[name]) return projCache[name];
-    const R = Math.PI / 180, ll = (x, y) => [x * 0.36 - 180, 83 - y * 141 / 460];
+  let llCache = null;
+  function llRings() {  // world.json back to lon/lat: cut at ±180°, points every 2° or less so edges bend with the projection
+    if (llCache) return llCache;
+    const ll = (x, y) => [x * 0.36 - 180, 83 - y * 141 / 460];
     const clip = (ring, lo) => {  // keep the side of lon = ±180 that is inside (Sutherland–Hodgman, one edge)
       const ins = q => lo ? q[0] >= -180 : q[0] <= 180, e = lo ? -180 : 180, out = [];
       ring.forEach((q, i) => { const pr = ring[(i + ring.length - 1) % ring.length];
@@ -3041,15 +3044,19 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
         if (ins(q)) out.push(q); });
       return out;
     };
-    const P = (lon, lat) => { const [x, y] = f(lon * R, Math.max(-85, Math.min(85, lat)) * R); return [x, -y]; };
-    const rings = {};
+    const dense = ring => ring.flatMap((q, i) => { const n = ring[(i + 1) % ring.length], k = Math.ceil(Math.max(Math.abs(n[0] - q[0]), Math.abs(n[1] - q[1])) / 2) || 1;
+      return Array.from({length: k}, (_, j) => [q[0] + (n[0] - q[0]) * j / k, q[1] + (n[1] - q[1]) * j / k]); });
+    return llCache = Object.fromEntries(Object.entries(world.paths).map(([cc, d]) => [cc, (d.match(/M[^M]*/g) || [])
+      .map(r => clip(clip((r.match(/-?[\d.]+,-?[\d.]+/g) || []).map(p => ll(...p.split(",").map(Number))), true), false)).filter(r => r.length > 2).map(dense)]));
+  }
+  function projWorld(name) {
+    const f = PROJ[name]; if (!f) return {w: world.w, h: world.h, paths: world.paths};
+    if (name === "globe") return {w: GW, h: GH, globe: true};
+    if (projCache[name]) return projCache[name];
+    const R = Math.PI / 180, P = (lon, lat) => { const [x, y] = f(lon * R, Math.max(-85, Math.min(85, lat)) * R); return [x, -y]; };
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     const add = pts => pts.forEach(([x, y]) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); });
-    const dense = ring => ring.flatMap((q, i) => { const n = ring[(i + 1) % ring.length], k = Math.ceil(Math.max(Math.abs(n[0] - q[0]), Math.abs(n[1] - q[1])) / 2) || 1;
-      return Array.from({length: k}, (_, j) => P(q[0] + (n[0] - q[0]) * j / k, q[1] + (n[1] - q[1]) * j / k)); });
-    for (const [cc, d] of Object.entries(world.paths))
-      rings[cc] = (d.match(/M[^M]*/g) || []).map(r => clip(clip((r.match(/-?[\d.]+,-?[\d.]+/g) || []).map(p => ll(...p.split(",").map(Number))), true), false))
-        .filter(r => r.length > 2).map(r => { const q = dense(r); add(q); return q; });
+    const rings = Object.fromEntries(Object.entries(llRings()).map(([cc, rs]) => [cc, rs.map(r => { const q = r.map(p => P(...p)); add(q); return q; })]));
     const frame = [];  // the edge of the map: ±180° meridians and the 83°N / 58°S cut
     for (let lat = 83; lat >= -58; lat -= 1) frame.push(P(180, lat));
     for (let lon = 180; lon >= -180; lon -= 2) frame.push(P(lon, -58));
@@ -3057,9 +3064,59 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
     for (let lon = -180; lon <= 180; lon += 2) frame.push(P(lon, 83));
     add(frame);
     const pad = 4, s = (world.w - 2 * pad) / (x1 - x0), h = Math.round((y1 - y0) * s + 2 * pad);
-    const fmt = r => "M" + r.map(([x, y]) => `${((x - x0) * s + pad).toFixed(1)},${((y - y0) * s + pad).toFixed(1)}`).join("L") + "Z";
-    return projCache[name] = {w: world.w, h, frame: frame.map(([x, y]) => `${((x - x0) * s + pad).toFixed(1)},${((y - y0) * s + pad).toFixed(1)}`).join(" "),
-      paths: Object.fromEntries(Object.entries(rings).map(([cc, rs]) => [cc, rs.map(fmt).join("")]))};
+    const xy = ([x, y]) => `${((x - x0) * s + pad).toFixed(1)},${((y - y0) * s + pad).toFixed(1)}`;
+    return projCache[name] = {w: world.w, h, frame: frame.map(xy).join(" "),
+      paths: Object.fromEntries(Object.entries(rings).map(([cc, rs]) => [cc, rs.map(r => "M" + r.map(xy).join("L") + "Z").join("")]))};
+  }
+  // Globe: orthographic, drag to spin. Rings are cut at the horizon in 3D and closed along its edge.
+  const GW = 1000, GH = 600, GR = 285;
+  let gRot = null;  // [lon, lat] facing the viewer; starts on the country with the most hits
+  function globePaths(rot) {
+    const R = Math.PI / 180, l0 = rot[0] * R, f0 = rot[1] * R, s0 = Math.sin(f0), c0 = Math.cos(f0), cx = GW / 2, cy = GH / 2;
+    const v3 = (lon, lat) => { const l = lon * R - l0, f = lat * R, cf = Math.cos(f);
+      return [cf * Math.sin(l), c0 * Math.sin(f) - s0 * cf * Math.cos(l), s0 * Math.sin(f) + c0 * cf * Math.cos(l)]; };
+    const xy = p => `${(cx + GR * p[0]).toFixed(1)},${(cy - GR * p[1]).toFixed(1)}`;
+    const cut = (a, b) => { const t = a[2] / (a[2] - b[2]), x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t, n = Math.hypot(x, y) || 1; return [x / n, y / n, 0]; };
+    const arc = (a, b, out) => { const t0 = Math.atan2(a[1], a[0]); let d = Math.atan2(b[1], b[0]) - t0;
+      d -= 2 * Math.PI * Math.round(d / (2 * Math.PI)); const k = Math.ceil(Math.abs(d) / 0.08);
+      for (let j = 1; j < k; j++) out.push([Math.cos(t0 + d * j / k), Math.sin(t0 + d * j / k), 0]); };
+    const ring = r => {
+      const v = r.map(p => v3(...p)); if (v.every(p => p[2] >= 0)) return "M" + v.map(xy).join("L") + "Z";
+      const out = []; let exit = -1;
+      v.forEach((q, i) => { const pr = v[(i + v.length - 1) % v.length];
+        if (q[2] >= 0) { if (pr[2] < 0) { const e = cut(pr, q); if (exit >= 0) arc(out[exit], e, out); else out.first = out.length; out.push(e); } out.push(q); }
+        else if (pr[2] >= 0) { out.push(cut(pr, q)); exit = out.length - 1; } });
+      if (!out.length) return "";
+      if (exit >= 0 && out.first !== undefined) { const tail = []; arc(out[exit], out[out.first], tail); out.splice(exit + 1, 0, ...tail); }
+      return "M" + out.map(xy).join("L") + "Z";
+    };
+    const line = pts => { let d = "", on = false; pts.forEach(p => { const q = v3(...p); if (q[2] >= 0) { d += (on ? "L" : "M") + xy(q); on = true; } else on = false; }); return d; };
+    const grat = [];
+    for (let lon = -180; lon < 180; lon += 30) grat.push(line(Array.from({length: 61}, (_, i) => [lon, -90 + i * 3])));
+    for (let lat = -60; lat <= 60; lat += 30) grat.push(line(Array.from({length: 121}, (_, i) => [-180 + i * 3, lat])));
+    return {grat: grat.join(""), paths: Object.fromEntries(Object.entries(llRings()).map(([cc, rs]) => [cc, rs.map(ring).join("")]))};
+  }
+  function globeRedraw(svg) {
+    const g = globePaths(gRot), gr = $(".grat", svg); if (gr) gr.setAttribute("d", g.grat);
+    $$("path[data-cc]", svg).forEach(p => p.setAttribute("d", g.paths[p.dataset.cc] || ""));
+  }
+  function globeStart(svg, c) {  // first time: face the busiest country; then drag (mouse, pen, sideways on touch) to spin
+    if (!gRot) { const top = Object.entries(c).sort((a, b) => b[1] - a[1])[0], rs = top && llRings()[top[0]];
+      const big = rs && rs.slice().sort((a, b) => b.length - a.length)[0];
+      gRot = big ? [big.reduce((a, p) => a + p[0], 0) / big.length, Math.max(-30, Math.min(40, big.reduce((a, p) => a + p[1], 0) / big.length))] : [10, 20]; }
+    globeRedraw(svg);
+    let st = null, raf = 0;
+    svg.addEventListener("pointerdown", ev => { if (ev.button) return; st = {x: ev.clientX, y: ev.clientY, r: gRot.slice(), id: ev.pointerId, moved: false}; });
+    svg.addEventListener("pointermove", ev => { if (!st || ev.pointerId !== st.id) return;
+      const dx = ev.clientX - st.x, dy = ev.clientY - st.y;
+      if (!st.moved && Math.hypot(dx, dy) < 4) return;
+      if (!st.moved) { st.moved = true; svg._drag = true; svg.setPointerCapture(st.id); svg.classList.add("drag"); hideTip(); }
+      const k = 180 / Math.PI / (GR * svg.getBoundingClientRect().width / GW);
+      gRot = [((st.r[0] - dx * k) % 360 + 540) % 360 - 180, Math.max(-80, Math.min(80, st.r[1] + dy * k))];
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; globeRedraw(svg); }); });
+    const end = () => { if (!st) return; if (st.moved) setTimeout(() => svg._drag = false, 0); st = null; svg.classList.remove("drag"); };
+    svg.addEventListener("pointerup", end); svg.addEventListener("pointercancel", end);
+    svg.addEventListener("click", ev => { if (svg._drag) ev.stopImmediatePropagation(); }, true);  // a drag isn't a click on a country
   }
   document.addEventListener("change", ev => { if (ev.target.id !== "wproj") return;
     cust.proj = PROJ[ev.target.value] ? ev.target.value : undefined; custSave();
@@ -3070,17 +3127,21 @@ const stabList = p => (p.dataset.stabs || "").split(",").filter(Boolean).map(x =
     const ps = $("#wproj"); if (ps) ps.value = PROJ[cust.proj] ? cust.proj : "";
     let svg = $("svg", box);
     if (!svg) { const m = projWorld(cust.proj);
-      box.innerHTML = `<svg viewBox="0 0 ${m.w} ${m.h}" role="img" aria-label="Hits per country">${m.frame ? `<polygon class="sph" points="${m.frame}"/>` : ""}${Object.entries(m.paths).map(([cc, d]) => `<path data-cc="${cc}" d="${d}"/>`).join("")}</svg>`; svg = $("svg", box);
-      const hov = cc => $$("path", svg).forEach(p => { const on = p.dataset.cc === cc; if (on !== p.classList.contains("hov")) { p.classList.toggle("hov", on); on && svg.appendChild(p); } });
-      svg.addEventListener("mousemove", ev => { const p = ev.target.closest("path"); if (!p) { hov(null); return hideTip(); } const cc = p.dataset.cc; hov(cc);
+      box.innerHTML = `<svg viewBox="0 0 ${m.w} ${m.h}" role="img" aria-label="Hits per country"${m.globe ? ' class="globe"' : ""}>${m.frame ? `<polygon class="sph" points="${m.frame}"/>` : ""}`
+        + (m.globe ? `<defs><radialGradient id="wglobe-shade" cx="42%" cy="38%" r="62%"><stop offset="55%" stop-color="#000" stop-opacity="0"/><stop offset="100%" stop-color="#000" stop-opacity=".28"/></radialGradient></defs><circle class="sph" cx="${GW / 2}" cy="${GH / 2}" r="${GR}"/><path class="grat"/>` : "")
+        + Object.keys(world.paths).map(cc => `<path data-cc="${cc}" d="${m.paths ? m.paths[cc] : ""}"/>`).join("")
+        + (m.globe ? `<circle class="shade" cx="${GW / 2}" cy="${GH / 2}" r="${GR}" fill="url(#wglobe-shade)"/>` : "") + "</svg>"; svg = $("svg", box);
+      const hov = cc => $$("path[data-cc]", svg).forEach(p => { const on = p.dataset.cc === cc; if (on !== p.classList.contains("hov")) { p.classList.toggle("hov", on); on && svg.insertBefore(p, $(".shade", svg)); } });
+      svg.addEventListener("mousemove", ev => { if (svg._drag) return; const p = ev.target.closest("path[data-cc]"); if (!p) { hov(null); return hideTip(); } const cc = p.dataset.cc; hov(cc);
         showTip(ev, `${cname(cc)} (${cc})`, [[emode === "all" ? "requests" : "hits", svg._c[cc] || 0, css("--s1")]]); });
       svg.addEventListener("mouseleave", () => { hov(null); hideTip(); });
-      svg.addEventListener("click", ev => { const p = ev.target.closest("path"); if (p) toggleTok("edge", "cn:" + p.dataset.cc); }); }
+      svg.addEventListener("click", ev => { const p = ev.target.closest("path[data-cc]"); if (p) toggleTok("edge", "cn:" + p.dataset.cc); });
+      if (m.globe) globeStart(svg, Object.fromEntries((e.top.cn_all || e.top.cn || []).map(([k, n]) => [k, n]))); }
     markMap();
     if (svg._d === e) return; svg._d = e;
     const c = Object.fromEntries((e.top.cn_all || e.top.cn || []).map(([k, n]) => [k, n])), max = Math.max(1, ...Object.values(c)), L = Math.log(max + 1);
     svg._c = c;
-    $$("path", svg).forEach(p => { const n = c[p.dataset.cc] || 0;
+    $$("path[data-cc]", svg).forEach(p => { const n = c[p.dataset.cc] || 0;
       p.style.fill = n ? `color-mix(in oklab, var(--s1) ${Math.round(30 + 70 * Math.log(n + 1) / L)}%, var(--mapland))` : ""; });
     $("#map-leg").innerHTML = `1<i style="background:linear-gradient(90deg, color-mix(in oklab, var(--s1) 30%, var(--mapland)), var(--s1))"></i>${max.toLocaleString()} ${emode === "all" ? "requests" : "hits"}`;
   }
