@@ -530,6 +530,10 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
   .aiask details { margin-top:4px; } .aiask details > summary { cursor:pointer; color:var(--dim); font-size:12px; } .aiask .as { white-space:pre-wrap; font-size:12px; margin-top:4px; overflow-wrap:anywhere; }
   .aiask .aqb { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:8px; }
   .airun.needs_approval { border-left-color:var(--accent); } .airun .aqx { margin-top:6px; font-size:12px; color:var(--dim); } .airun .aqx b { color:var(--text); font-weight:600; }
+  .klist .kn { display:flex; align-items:flex-start; gap:10px; padding:9px 14px; border-bottom:1px solid var(--line); }
+  .klist .kn .kt { flex:1; font-size:13px; overflow-wrap:anywhere; } .klist .kn .ktag { margin-left:8px; text-transform:none; }
+  .klist .kadd { display:flex; gap:8px; flex-wrap:wrap; padding:10px 14px; } .klist .kadd .grow { flex:2 1 240px; } .klist .kadd .mono { flex:1 1 200px; }
+  .klist .empty { padding:10px 14px; } .kwhy { font-size:12.5px; color:var(--accent2); margin-top:3px; overflow-wrap:anywhere; }
   .aitag.run::before { content:""; display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--accent); margin-right:5px; vertical-align:1px; animation:aipulse 1.2s ease-in-out infinite; }
   @keyframes aipulse { 50% { opacity:.25; } }
   .aib span { color:var(--accent); } .aib.ico { padding-left:9px; padding-right:9px; }
@@ -1500,6 +1504,33 @@ return f(u.pathname,Object.assign({},o,{method:"POST",headers:{"Content-Type":"a
 {% endfor %}
 </div>
 {% endif %}
+
+{% if expected %}
+<h2>Expected <span class="n zero">{{ expected|length }}</span><span class="meta">covered by a known, so not on the action list</span></h2>
+<div class="card list">
+{% for i in expected %}
+  <div class="item info" style="opacity:.8" data-key="{{ i.key }}" data-kind="Expected" data-title="{{ i.title }}" data-sub="{{ i.source }}" data-q='{{ {"sev": i.severity, "source": i.source, "state": "expected"}|tojson }}'>
+    <div class="body"><div class="title"><span class="sev">{{ i.severity }}</span>{{ i.title }}</div>
+      <div class="kwhy">Known: {{ i.known.text }}</div>
+      <div class="meta">{{ i.source }} · first {{ i.first_seen|age }} ago{% if i.count > 1 %} · seen {{ i.count }}×{% endif %}</div></div>
+    <div class="actions"><button type="button" class="btn" data-drawer="{{ i.key }}" title="Timeline and related log lines">Details</button>
+      <form method="post" action="/item"><input type="hidden" name="key" value="{{ i.key }}"><button class="ok" name="action" value="resolve" title="Close it; it reopens if it fires again">Resolve</button></form></div>
+  </div>
+{% endfor %}
+</div>
+{% endif %}
+
+<div class="phd"><h2>Knowns <span class="meta">facts you tell the board: AI runs and briefs treat them as true{% if knowns %} · {{ knowns|length }}{% endif %}</span></h2></div>
+<div class="card list klist">
+{% for k in knowns %}
+  <div class="kn"><div class="kt">{{ k.text }}{% if k.match %}<span class="ktag" title="Open items matching this move to Expected">covers: {{ k.match }}</span>{% endif %}<div class="meta">{{ k.who or "?" }} · {{ k.created|age }} ago</div></div>
+    <form method="post" action="/knowns"><input type="hidden" name="action" value="remove"><input type="hidden" name="id" value="{{ k.id }}"><button title="Remove this known">Remove</button></form></div>
+{% else %}<div class="empty meta">No knowns yet. Example: "Brimstone is on hold and down on purpose", covering <code>brimstone</code>.</div>{% endfor %}
+  <form method="post" action="/knowns" class="kadd"><input type="hidden" name="action" value="add">
+    <input class="grow" type="text" name="text" placeholder="A fact, e.g. &quot;No backups wanted for now&quot;" maxlength="500" required>
+    <input class="mono" type="text" name="match" placeholder="covers (optional): source, host, check name or glob" maxlength="120" title="Open items whose source is this, or whose key or title contains it (or matches it as a glob with *), move from Needs action to Expected. Leave empty to only tell the AI.">
+    <button class="pri">Add known</button></form>
+</div>
 
 <div class="phd"><h2>Maintenance <span class="meta">{% if maint_now %}{{ maint_now|length }} active · {% endif %}matching items are hidden, uptime checks don't alert</span></h2>
   <span class="spacer"></span><button type="button" class="btn" data-mnew title="Silence alerts for a host, a source or everything while you work">+ Plan a window</button></div>

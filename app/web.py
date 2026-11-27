@@ -605,6 +605,7 @@ def board(request: Request, show: str = ""):
         infra = {k: db.kv_get(con, k) or {} for k in ("proxmox", "wan", "action1", "wazuh", "backups", "disks", "bandwidth")}
         up = uptime_summary(con, now)
         maint_now = db.active_maint(con, now)
+        knowns = db.knowns(con)
         maint = [dict(r) for r in con.execute("SELECT * FROM maint WHERE end > ? ORDER BY start", (now,))]
         expiries = db.kv_get(con, "expiries", [])
         manual_names = {m["name"] for m in db.manual_expiries(con)}
@@ -612,7 +613,13 @@ def board(request: Request, show: str = ""):
         tls_t = db.targets(con, "tls")
     in_maint = [i for i in items if i["kind"] != "todo" and db.in_maint(maint_now, i["key"], i["source"])]
     items = [i for i in items if i not in in_maint]
-    asks = [dict(ai[i["key"]][0], title=i["title"]) for i in items + in_maint if ai_pending((ai.get(i["key"]) or [None])[0])]
+    expected = []   # open items a known covers: off the action list, shown under Expected with the known
+    for i in items:
+        kn = i["kind"] != "todo" and db.known_for(knowns, i["key"], i["source"], i["title"])
+        if kn:
+            expected.append(dict(i, known=kn))
+    items = [i for i in items if not any(e["key"] == i["key"] for e in expected)]
+    asks = [dict(ai[i["key"]][0], title=i["title"]) for i in items + in_maint + expected if ai_pending((ai.get(i["key"]) or [None])[0])]
     targets = [dict(t, kind=t.get("kind", "http"), group=t.get("group") or "Other", **(up.get(t["name"]) or {})) for t in ut]
     for t in targets:  # what the edit button loads into the builder; secrets never go to the page
         t["spec"] = {k: v for k, v in t.items() if k in ("name", "url", "host", "port", "group", "method", "headers", "body", "expect",
@@ -654,7 +661,7 @@ def board(request: Request, show: str = ""):
                       tab=request.query_params.get("tab", ""), csctl_hosts=CSCTL_HOSTS,
                       todos=sum(1 for i in items if i["kind"] == "todo"), hosts_missing=hosts_missing,
                       clean_view=BOARD.get("clean_view") or [], edge_nodes=CSCTL_HOSTS, targets=targets, up_stats=up_stats, tls_targets=tls_t, maint=maint, maint_now=maint_now,
-                      in_maint=in_maint, ai_asks=asks, instatus=bool(INSTATUS and secret("INSTATUS_API_KEY")), ai=ai, viewer_ip=viewer_ip(request),
+                      in_maint=in_maint, ai_asks=asks, knowns=knowns, expected=expected, instatus=bool(INSTATUS and secret("INSTATUS_API_KEY")), ai=ai, viewer_ip=viewer_ip(request),
                       mods=MODS, bw_on=BW_ON, title=TITLE, host_label=HOST_LABEL, user=request.state.user, role=request.state.role, ai_agent=AI_AGENT,
                       log_rules=bool(C.CONFIG.get("log_rules")), geoip=geo_provider(),
                       up_bad=sum(1 for t in targets if t.get("last") and not t["last"]["ok"]), chart_data={"days": days, "volume": volume.get("hours") and {
@@ -1162,6 +1169,7 @@ async def runner_claim(request: Request):
         for b in briefs:
             con.execute("UPDATE ai_briefs SET state='running' WHERE id=?", (b["id"],))
         rows = [dict(r) for r in con.execute("SELECT id, key, who, grp, approved FROM ai_runs WHERE state='queued' ORDER BY created, rowid")]
+        known_list = [{"text": k["text"], "match": k["match"]} for k in db.knowns(con)]
         if not (isinstance(info, dict) and info.get("groups")):
             # runners before 2.6.1 would start one agent session per item: a bulk selection waits for an updated runner
             multi = {g for g, in con.execute("SELECT grp FROM ai_runs WHERE grp!='' GROUP BY grp HAVING COUNT(*) > 1")}
@@ -1179,6 +1187,7 @@ async def runner_claim(request: Request):
     for r in out:
         r["tokens"], r["query"], r["logs"] = related_logs(r["item"], limit=40 if not r["grp"] else 15)
         r["board"] = {"title": TITLE, "host_label": HOST_LABEL, "approvals": True}   # runner may answer needs_approval
+        r["knowns"] = known_list
     if isinstance(info, dict) and info.get("groups"):   # runners from 2.6.1: a bulk selection is one job, one prompt
         jobs, by = [], {}
         for r in out:
@@ -1187,7 +1196,7 @@ async def runner_claim(request: Request):
             elif r["grp"] in by:
                 by[r["grp"]]["runs"].append(r)
             else:
-                by[r["grp"]] = {"kind": "group", "id": r["grp"], "who": r["who"], "board": r["board"], "runs": [r]}
+                by[r["grp"]] = {"kind": "group", "id": r["grp"], "who": r["who"], "board": r["board"], "knowns": r["knowns"], "runs": [r]}
                 jobs.append(by[r["grp"]])
         out = [j if j.get("kind") != "group" or len(j["runs"]) > 1 else j["runs"][0] for j in jobs]
     return briefs + out
@@ -1347,6 +1356,11 @@ def brief_start(request: Request, k: str = Form(...), r: str = Form("24h"), tz: 
                                        text=text[:15000])
     else:
         prompt = brief_prompt(k, series_cached(k, r, tz if -900 <= tz <= 900 else None, f), r, f)
+    with db.connect() as con:
+        kn = db.knowns_text(db.knowns(con))
+    if kn:
+        prompt += ("\n\nKnown facts from the operator (true; don't flag what they explain as a problem, e.g. something "
+                   "down on purpose):\n" + kn)
     bid = str(uuid.uuid4())
     with db.connect() as con:
         con.execute("INSERT INTO ai_briefs (id, kind, prompt, who, created) VALUES (?, ?, ?, ?, ?)", (bid, k, prompt, who(request), now))
@@ -1524,6 +1538,30 @@ def instatus_update(mid, status, comp_ids, comp_status):
         "message": INSTATUS_TEXT if status == "INPROGRESS" else "The updates are done.", "status": status,
         "started": dt.datetime.now(dt.timezone.utc).isoformat(), "notify": False, "components": comp_ids,
         "statuses": [{"id": c, "status": comp_status} for c in comp_ids]})
+
+
+@app.post("/knowns")
+async def knowns_edit(request: Request):
+    """Add / edit / remove a known (a fact from the operator). Knowns go into AI runs and briefs; one with a match moves
+    the items it covers from Needs action to Expected."""
+    f = await request.form()
+    action, by = f.get("action"), who(request)
+    text, match = " ".join(str(f.get("text") or "").split())[:500], " ".join(str(f.get("match") or "").split())[:120]
+    with db.connect() as con:
+        if action in ("add", "edit"):
+            if not text:
+                return back("Write the fact first", "")
+            if action == "edit":
+                con.execute("UPDATE knowns SET text=?, match=? WHERE id=?", (text, match, int(f.get("id") or 0)))
+            else:
+                con.execute("INSERT INTO knowns(text, match, who, created) VALUES(?,?,?,?)", (text, match, by, time.time()))
+            msg = "Saved the known"
+        elif action == "remove":
+            con.execute("DELETE FROM knowns WHERE id=?", (int(f.get("id") or 0),))
+            msg = "Removed the known"
+        else:
+            raise HTTPException(400, "unknown action")
+    return back(msg, "")
 
 
 @app.post("/maint")

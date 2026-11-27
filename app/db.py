@@ -1,4 +1,5 @@
 """SQLite state for the board: action items, events, host check-ins, uptime, maintenance, AI runs."""
+import fnmatch
 import json
 import sqlite3
 import time
@@ -160,6 +161,13 @@ CREATE TABLE IF NOT EXISTS waf_audit (       -- every apply: full state after it
     result TEXT NOT NULL,
     ok INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS knowns (          -- facts from the operator: "Brimstone is down on purpose", "no backups wanted"
+    id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL,                      -- the fact, in the operator's words; goes into AI runs and briefs
+    match TEXT NOT NULL DEFAULT '',          -- optional: items it covers (like a maintenance target) move to Expected
+    who TEXT NOT NULL DEFAULT '',
+    created REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS targets (         -- what the board checks (uptime, tls); config.yaml only seeds the first run
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,                      -- uptime | tls
@@ -261,6 +269,29 @@ def in_maint(windows, key, source):
         if t == "all" or t == source.lower() or t in key.lower():
             return True
     return False
+
+
+def knowns(con):
+    return [dict(r) for r in con.execute("SELECT id, text, match, who, created FROM knowns ORDER BY id")]
+
+
+def known_for(knowns, key, source, title=""):
+    """The first known whose match covers an item: a source name, part of the item key or title (case-insensitive),
+    or a glob with * / ? on the key. None when no known matches (knowns without a match only inform the AI)."""
+    k, s, t = key.lower(), source.lower(), (title or "").lower()
+    for kn in knowns:
+        m = (kn.get("match") or "").strip().lower()
+        if not m:
+            continue
+        if m == s or m in k or m in t or (("*" in m or "?" in m) and fnmatch.fnmatchcase(k, m)):
+            return kn
+    return None
+
+
+def knowns_text(knowns):
+    """Markdown list for prompts (AI runs, briefs); empty string when there are none."""
+    return "\n".join(f"- {kn['text']}" + (f" (covers board items matching `{kn['match']}`)" if kn.get("match") else "")
+                     for kn in knowns)
 
 
 def prune(con, days=30):
