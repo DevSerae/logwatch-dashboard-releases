@@ -149,7 +149,7 @@ off runs no collectors, makes no outbound calls and needs no secrets.
 | Module | Turn it on and you get |
 |---|---|
 | **Instatus** | Board maintenance windows also post and resolve maintenance on your Instatus page |
-| **Resolve with AI** | Your agent CLI (Claude Code, Codex, Gemini, OpenCode) works an incident while you watch the live transcript on the board |
+| **Resolve with AI** | Your agent CLI (Claude Code, Codex, Gemini, OpenCode) works an incident while you watch the live transcript on the board; it asks on the board (Approve / Deny) before risky changes |
 
 ## 📸 Screenshots
 

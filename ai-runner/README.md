@@ -60,6 +60,23 @@ Agent CLIs change their JSON event formats from time to time. If the live transc
 the summary still arrives. Try `AGENT=command` with `AGENT_CMD='claude -p "$(cat {prompt_file})"'` (or similar)
 for plain-text output.
 
+## Approvals
+
+A headless agent can't stop mid-run to ask, so it asks at the end. When a fix needs one action the operator must OK
+(a production restart, a major upgrade), the agent prepares what is safe, then answers `needs_approval` with that one
+action on an `APPROVAL:` line. The board then:
+
+- tags the item **AI needs your OK** and shows the action with **Approve** / **Deny** (on the item and in its drawer)
+- shows a header chip with the number of approvals waiting (admins only)
+- on **Approve**, queues a new run whose prompt says exactly that action is approved (nothing beyond it); on **Deny**,
+  notes it in the item's history. A new run supersedes an unanswered request.
+
+Updated runners only offer `needs_approval` when the board says it understands it (`board.approvals` in the claim),
+so an older board keeps getting `fixed` / `not_fixed`. An older runner never asks.
+
+To pre-approve routine work (e.g. "image updates within the same major version, after backing up the config"), say
+so in `AGENT_NOTES`: the agent then does it without asking and asks only for the rest.
+
 ## Environment notes
 
 Put durable knowledge about your network into `AGENT_NOTES` (a markdown file) or the agent's own memory/instructions in
