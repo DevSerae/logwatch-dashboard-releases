@@ -681,11 +681,22 @@ def proxmox(con, start, end):
                 db.upsert_item(con, key, "proxmox", f"Storage {st['storage']} on {n['name']} is {pct:.0f}% full",
                                f"{st['used'] / 2**30:.0f} of {st['max'] / 2**30:.0f} GiB used", "warning", kind="condition")
     failed = []
-    for t in pve_get("/cluster/tasks"):
-        if t.get("type") == "vzdump" and t.get("starttime", 0) > time.time() - 86400 and t.get("status") not in (None, "OK", ""):
+    dumps = [t for t in pve_get("/cluster/tasks") if t.get("type") == "vzdump" and t.get("starttime", 0) > time.time() - 86400]
+    ok = {}  # newest successful backup per (node, guest)
+    for t in dumps:
+        if t.get("status") == "OK":
+            k = (t.get("node"), t.get("id") or "")
+            ok[k] = max(ok.get(k, 0), t.get("starttime", 0))
+    for t in dumps:
+        if t.get("status") not in (None, "OK", ""):
             failed.append({"node": t.get("node"), "id": t.get("id") or "all", "status": t.get("status"),
                            "ts": t.get("starttime")})
-            db.upsert_item(con, f"pve-backup:{t.get('upid')}", "proxmox",
+            # a finished task never fires again: raise it once (resolving sticks), and not at all if a later run worked
+            key = f"pve-backup:{t.get('upid')}"
+            if ok.get((t.get("node"), t.get("id") or ""), 0) > t.get("starttime", 0) or \
+                    con.execute("SELECT 1 FROM items WHERE key=?", (key,)).fetchone():
+                continue
+            db.upsert_item(con, key, "proxmox",
                            f"Backup failed on {t.get('node')}: {t.get('id') or 'job'}",
                            f"{t.get('status')}\nTask {t.get('upid')}. See Datacenter → Tasks in Proxmox.", "error")
     db.clear_conditions(con, "proxmox", active)

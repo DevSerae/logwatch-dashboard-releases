@@ -299,7 +299,7 @@ class AgentError(Exception):
     pass
 
 
-VERSION = "2.9.0"
+VERSION = "2.9.1"
 READY = {"agent": "", "ready": True, "why": "", "version": VERSION, "at": 0.0}
 
 
